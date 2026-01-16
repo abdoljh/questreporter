@@ -1,6 +1,5 @@
 # streamlit_app.py
 # Version 3.0 - Production Grade
-# Jan. 16, 2026
 # 
 # Key Improvements:
 # 1. Proper academic citation format (APA/IEEE)
@@ -822,10 +821,299 @@ def generate_html_report_enhanced(refined_draft: Dict, form_data: Dict, sources:
     html += f"""
     <h1>Data & Statistical Analysis</h1>
     <p>{refined_draft.get('dataAnalysis', 'Data analysis not available.')}</p>
+
+    <h1>Challenges and Limitations</h1>
+    <p>{refined_draft.get('challenges', 'Challenges not available.')}</p>
+
+    <h1>Future Outlook</h1>
+    <p>{refined_draft.get('futureOutlook', 'Future outlook not available.')}</p>
+
+    <h1>Conclusion</h1>
+    <p>{refined_draft.get('conclusion', 'Conclusion not available.')}</p>
+
+    <div class="references">
+        <h1>References</h1>
 """
 
+    # Format citations based on style
+    for i, source in enumerate(sources, 1):
+        if citation_style == 'IEEE':
+            citation = format_citation_ieee(source, i)
+        else:  # APA default
+            citation = format_citation_apa(source, i)
+        
+        html += f"""
+        <div class="ref-item">
+            {citation}
+        </div>
+"""
 
+    html += f"""
+    </div>
+    
+    <div class="metadata-footer">
+        <p><strong>Report Metadata</strong></p>
+        <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        <p>Sources analyzed: {len(sources)} | Citation style: {citation_style}</p>
+        <p>Report hash: {hash(json.dumps(refined_draft))}</p>
+    </div>
+</body>
+</html>"""
 
+    return html
 
+def create_metadata_export() -> str:
+    """Create structured metadata export"""
+    metadata = {
+        "report_info": {
+            "topic": st.session_state.form_data['topic'],
+            "subject": st.session_state.form_data['subject'],
+            "researcher": st.session_state.form_data['researcher'],
+            "institution": st.session_state.form_data['institution'],
+            "date": st.session_state.form_data['date'],
+            "citation_style": st.session_state.form_data.get('citation_style', 'APA'),
+            "generated_at": datetime.now().isoformat()
+        },
+        "research_process": {
+            "queries_executed": st.session_state.research['queries'],
+            "subtopics_identified": st.session_state.research['subtopics'],
+            "phrase_variations": st.session_state.research['phrase_variations'],
+            "api_calls_used": st.session_state.api_call_count
+        },
+        "sources": {
+            "accepted_count": len(st.session_state.research['sources']),
+            "rejected_count": len(st.session_state.research.get('rejected_sources', [])),
+            "accepted_sources": [
+                {
+                    "index": i+1,
+                    "title": s['title'],
+                    "authors": s.get('metadata', {}).get('authors', 'Unknown'),
+                    "year": s.get('metadata', {}).get('year', 'Unknown'),
+                    "venue": s.get('metadata', {}).get('venue', 'Unknown'),
+                    "url": s['url'],
+                    "doi": s.get('metadata', {}).get('doi'),
+                    "credibility_score": s['credibilityScore'],
+                    "justification": s.get('credibilityJustification', ''),
+                    "query": s['query']
+                }
+                for i, s in enumerate(st.session_state.research['sources'])
+            ],
+            "rejected_sources": [
+                {
+                    "url": r['url'],
+                    "query": r['query'],
+                    "reason": r['reason']
+                }
+                for r in st.session_state.research.get('rejected_sources', [])
+            ]
+        },
+        "quality_metrics": {
+            "overall_score": st.session_state.critique.get('overallScore', 0) if st.session_state.critique else 0,
+            "topic_relevance": st.session_state.critique.get('topicRelevance', 0) if st.session_state.critique else 0,
+            "citation_quality": st.session_state.critique.get('citationQuality', 0) if st.session_state.critique else 0,
+            "average_source_credibility": sum(s['credibilityScore'] for s in st.session_state.research['sources']) / len(st.session_state.research['sources']) if st.session_state.research['sources'] else 0
+        },
+        "report_version": "3.0_enhanced"
+    }
+    
+    return json.dumps(metadata, indent=2)
 
+def execute_research_pipeline():
+    """Main pipeline"""
+    st.session_state.is_processing = True
+    st.session_state.step = 'processing'
+    st.session_state.api_call_count = 0
 
+    try:
+        if not API_AVAILABLE:
+            raise Exception("API key not configured")
+
+        topic = st.session_state.form_data['topic']
+        subject = st.session_state.form_data['subject']
+
+        # Stage 1: Analysis
+        st.info(f"🔍 Stage 1: Analyzing '{topic}'...")
+        analysis = analyze_topic_with_ai(topic, subject)
+        st.session_state.research['subtopics'] = analysis['subtopics']
+        st.session_state.research['queries'] = analysis['researchQueries']
+
+        # Stage 2: Research
+        st.info(f"🌐 Stage 2: Web research...")
+        sources, rejected = execute_web_research_enhanced(analysis['researchQueries'], topic)
+        st.session_state.research['sources'] = sources
+        st.session_state.research['rejected_sources'] = rejected
+
+        if len(sources) < 3:
+            raise Exception(f"Only {len(sources)} sources found. Need at least 3.")
+
+        # Stage 3: Draft
+        st.info(f"✍️ Stage 3: Writing...")
+        draft = generate_draft_from_sources_enhanced(
+            topic, subject, analysis['subtopics'], 
+            sources, st.session_state.research['phrase_variations']
+        )
+        st.session_state.draft = draft
+
+        # Stage 4: Critique
+        st.info("🔍 Stage 4: Review...")
+        critique = critique_draft_enhanced(draft, sources, topic)
+        st.session_state.critique = critique
+
+        # Stage 5: Refine
+        st.info("✨ Stage 5: Refinement...")
+        refined = refine_draft_enhanced(
+            draft, critique, topic, 
+            st.session_state.research['phrase_variations']
+        )
+        st.session_state.final_report = refined
+
+        # Stage 6: HTML
+        st.info("📄 Stage 6: HTML generation...")
+        html = generate_html_report_enhanced(refined, st.session_state.form_data, sources)
+        st.session_state.html_report = html
+
+        # Create metadata export
+        st.session_state.metadata_export = create_metadata_export()
+
+        update_progress("Complete", f"Report generated!", 100)
+        st.session_state.step = 'complete'
+        
+        st.success(f"✅ Done! {st.session_state.api_call_count} API calls, {len(sources)} sources.")
+
+    except Exception as e:
+        update_progress("Error", str(e), 0)
+        st.session_state.step = 'error'
+        st.error(f"❌ Error: {str(e)}")
+    finally:
+        st.session_state.is_processing = False
+
+def reset_system():
+    """Reset"""
+    for key in list(st.session_state.keys()):
+        if key not in ['form_data']:
+            del st.session_state[key]
+    st.session_state.step = 'input'
+    st.session_state.api_call_count = 0
+
+# Main UI
+st.title("📝 Academic Report Writer Pro")
+st.markdown("**Version 3.0 - Production Grade with Enhanced Citations & Metadata**")
+
+if st.session_state.step == 'input':
+    st.markdown("### Report Configuration")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        topic = st.text_input("Report Topic *", value=st.session_state.form_data['topic'], 
+                              placeholder="e.g., Quantum Computing")
+        subject = st.text_input("Subject *", value=st.session_state.form_data['subject'],
+                                placeholder="e.g., Computer Science")
+    with col2:
+        researcher = st.text_input("Researcher *", value=st.session_state.form_data['researcher'])
+        institution = st.text_input("Institution *", value=st.session_state.form_data['institution'])
+
+    col3, col4 = st.columns(2)
+    with col3:
+        date = st.date_input("Date", value=datetime.strptime(st.session_state.form_data['date'], '%Y-%m-%d'))
+    with col4:
+        citation_style = st.selectbox("Citation Style", ["APA", "IEEE"], 
+                                      index=0 if st.session_state.form_data.get('citation_style', 'APA') == 'APA' else 1)
+
+    st.session_state.form_data.update({
+        'topic': topic, 'subject': subject, 'researcher': researcher,
+        'institution': institution, 'date': date.strftime('%Y-%m-%d'),
+        'citation_style': citation_style
+    })
+
+    is_valid = all([topic, subject, researcher, institution])
+
+    st.markdown("---")
+    if st.button("🚀 Generate Report", disabled=not is_valid or not API_AVAILABLE, type="primary"):
+        execute_research_pipeline()
+        st.rerun()
+    
+    if not is_valid:
+        st.warning("⚠️ Fill all required fields")
+
+elif st.session_state.step == 'processing':
+    st.markdown("### 🔄 Processing")
+    
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.markdown(f"**{st.session_state.progress['stage']}**")
+        st.progress(st.session_state.progress['percent'] / 100)
+    with col2:
+        st.metric("Progress", f"{st.session_state.progress['percent']}%")
+    
+    st.info(st.session_state.progress['detail'])
+    
+    if st.session_state.research['sources']:
+        with st.expander(f"🔍 Sources ({len(st.session_state.research['sources'])})", expanded=True):
+            for i, s in enumerate(st.session_state.research['sources'], 1):
+                st.markdown(f"**{i}.** {s['title'][:80]}  \n🔗 {s['url'][:60]}  \n📊 {s['credibilityScore']}%")
+    
+    if st.session_state.is_processing:
+        time.sleep(2)
+        st.rerun()
+
+elif st.session_state.step == 'complete':
+    st.success("✅ Report Generated!")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Sources", len(st.session_state.research['sources']))
+    with col2:
+        st.metric("Rejected", len(st.session_state.research.get('rejected_sources', [])))
+    with col3:
+        avg_cred = sum(s['credibilityScore'] for s in st.session_state.research['sources']) / len(st.session_state.research['sources'])
+        st.metric("Avg Credibility", f"{avg_cred:.0f}%")
+    with col4:
+        st.metric("Quality", f"{st.session_state.critique.get('overallScore', 0)}/100")
+
+    st.markdown("---")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if 'html_report' in st.session_state:
+            st.download_button(
+                "📥 Download HTML Report",
+                data=st.session_state.html_report,
+                file_name=f"{st.session_state.form_data['topic'].replace(' ', '_')}_Report.html",
+                mime="text/html",
+                type="primary"
+            )
+    with col2:
+        if st.session_state.metadata_export:
+            st.download_button(
+                "📊 Download Metadata (JSON)",
+                data=st.session_state.metadata_export,
+                file_name=f"{st.session_state.form_data['topic'].replace(' ', '_')}_Metadata.json",
+                mime="application/json"
+            )
+    
+    with st.expander("📚 Sources Used"):
+        for i, s in enumerate(st.session_state.research['sources'], 1):
+            meta = s.get('metadata', {})
+            st.markdown(f"**[{i}]** {meta.get('authors', 'Unknown')} ({meta.get('year', 'Unknown')}). {s['title']}  \n🔗 {s['url']}  \n📊 {s['credibilityScore']}% - {s.get('credibilityJustification', '')}")
+    
+    with st.expander("🚫 Rejected Sources"):
+        for r in st.session_state.research.get('rejected_sources', []):
+            st.markdown(f"❌ {r['url'][:80]}  \n**Reason:** {r['reason']}")
+    
+    if st.button("🔄 New Report", type="secondary"):
+        reset_system()
+        st.rerun()
+
+elif st.session_state.step == 'error':
+    st.error("❌ Error")
+    st.warning(st.session_state.progress['detail'])
+    if st.button("🔄 Try Again", type="primary"):
+        reset_system()
+        st.rerun()
+
+st.markdown("---")
+st.markdown("""
+<div style="text-align: center; color: #666; font-size: 0.85em;">
+    <strong>Version 3.0 Enhanced</strong> | APA/IEEE Citations | Metadata Export | Source Validation
+</div>
+""", unsafe_allow_html=True)
