@@ -1,16 +1,13 @@
 # streamlit_app.py
-# Version 3.9 - STABLE MODELS (Based on Working v3.2)
+# Version 3.2 - COMPLETE & FIXED
 # 
-# WHAT'S NEW:
-# - Uses only stable, non-retiring models
-# - claude-sonnet-4-20250514 for everything (your proven working model)
-# - Optional: Try claude-haiku-4-20250115 if you have access
-# - No deprecated or retiring models
-# 
-# MODEL STATUS:
-# ✅ claude-sonnet-4-20250514 - CONFIRMED WORKING with your API key
-# ❌ claude-3-5-haiku-20241022 - RETIRING Feb 19, 2026 (removed)
-# ❓ claude-haiku-4-20250115 - NEW Haiku 4 (try if you want budget mode)
+# FIXES:
+# 1. Fixed metadata extraction (titles showing as "- **URL:**")
+# 2. Better title cleaning and validation
+# 3. Smart metadata extraction from URLs
+# 4. Improved phrase variation enforcement
+# 5. Execution time tracking
+# 6. Expected time: 6-8 minutes
 
 import streamlit as st
 import json
@@ -21,6 +18,12 @@ import base64
 from typing import List, Dict, Any, Tuple
 import re
 from urllib.parse import urlparse
+
+# Define models in use
+MODEL1="claude-sonnet-4-20250514"  # ✅ (Expensive)
+MODEL2="claude-haiku-3-5-20241022" # ❌
+MODEL3="claude-haiku-4-20250115"   # ❌
+MODEL4="claude-3-5-sonnet-20241022"
 
 st.set_page_config(
     page_title="Academic Report Writer Pro",
@@ -51,8 +54,7 @@ if 'form_data' not in st.session_state:
         'researcher': '',
         'institution': '',
         'date': datetime.now().strftime('%Y-%m-%d'),
-        'citation_style': 'APA',
-        'try_haiku4': False  # Option to try new Haiku 4
+        'citation_style': 'APA'
     }
 if 'progress' not in st.session_state:
     st.session_state.progress = {'stage': '', 'detail': '', 'percent': 0}
@@ -80,11 +82,9 @@ if 'start_time' not in st.session_state:
     st.session_state.start_time = None
 if 'execution_time' not in st.session_state:
     st.session_state.execution_time = None
-if 'estimated_cost' not in st.session_state:
-    st.session_state.estimated_cost = 0.0
 
 try:
-    ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"].strip()
+    ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"]
     API_AVAILABLE = True
 except:
     st.error("⚠️ API key not found")
@@ -118,26 +118,12 @@ def rate_limit_wait():
     current_time = time.time()
     time_since_last = current_time - st.session_state.last_api_call_time
     
-    min_wait = 5.0
+    min_wait = 3.0 # 5.0
     if time_since_last < min_wait:
         time.sleep(min_wait - time_since_last)
     
     st.session_state.last_api_call_time = time.time()
     st.session_state.api_call_count += 1
-
-def estimate_cost(tokens_used: int, model: str) -> float:
-    """Estimate API cost based on model pricing"""
-    if "haiku-4" in model.lower():
-        # Haiku 4: $0.40 input, $2.00 output per million tokens
-        input_cost = 0.40 / 1_000_000
-        output_cost = 2.00 / 1_000_000
-    else:
-        # Sonnet 4: $3 input, $15 output per million tokens
-        input_cost = 3.00 / 1_000_000
-        output_cost = 15.00 / 1_000_000
-    
-    # Rough estimate: 60% input, 40% output
-    return (tokens_used * 0.6 * input_cost) + (tokens_used * 0.4 * output_cost)
 
 def parse_json_response(text: str) -> Dict:
     try:
@@ -152,14 +138,7 @@ def parse_json_response(text: str) -> Dict:
                 pass
         return {}
 
-def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000, use_web_search: bool = False, try_haiku4: bool = False) -> Dict:
-    """
-    Call Anthropic API
-    
-    Args:
-        try_haiku4: If True, try claude-haiku-4-20250115 (may not be available)
-                    If False, use claude-sonnet-4-20250514 (confirmed working)
-    """
+def call_anthropic_api(messages: List[Dict], max_tokens: int = 500, use_web_search: bool = False) -> Dict:
     if not API_AVAILABLE:
         raise Exception("API key not configured")
 
@@ -171,14 +150,8 @@ def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000, use_web_sea
         "anthropic-version": "2023-06-01"
     }
     
-    # Model selection - STABLE MODELS ONLY
-    if try_haiku4:
-        model = "claude-haiku-4-20250115"  # New Haiku 4 (if available)
-    else:
-        model = "claude-sonnet-4-20250514"  # Your confirmed working model
-    
     data = {
-        "model": model,
+        "model": "claude-3-5-sonnet-20241022",
         "max_tokens": max_tokens,
         "messages": messages
     }
@@ -193,48 +166,39 @@ def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000, use_web_sea
                 "https://api.anthropic.com/v1/messages",
                 headers=headers,
                 json=data,
-                timeout=120
+                timeout=90 # 129
             )
             
             if response.status_code == 429:
-                wait_time = 20 * (attempt + 1)
+                wait_time = 10 * (attempt + 1)
                 st.warning(f"⏳ Rate limited. Waiting {wait_time}s")
                 time.sleep(wait_time)
                 continue
-            
-            if response.status_code != 200:
-                # If Haiku 4 fails, fallback to Sonnet 4
-                if try_haiku4 and response.status_code == 404:
-                    st.warning("⚠️ Haiku 4 not available. Falling back to Sonnet 4.")
-                    return call_anthropic_api(messages, max_tokens, use_web_search, False)
-                raise Exception(f"API Error {response.status_code}: {response.text[:200]}")
                 
-            result = response.json()
-            
-            # Track cost
-            usage = result.get('usage', {})
-            tokens = usage.get('input_tokens', 0) + usage.get('output_tokens', 0)
-            cost = estimate_cost(tokens, model)
-            st.session_state.estimated_cost += cost
-            
-            return result
+            response.raise_for_status()
+            return response.json()
             
         except requests.exceptions.RequestException as e:
             if attempt == max_retries - 1:
                 raise
-            time.sleep(10 * (attempt + 1))
+            time.sleep(5 * (attempt + 1))
     
     raise Exception("Failed after retries")
 
 def clean_title(title: str) -> str:
     """Clean extracted title from markdown and artifacts"""
+    # Remove markdown formatting
     title = re.sub(r'\*\*|\*|__|_', '', title)
+    # Remove leading artifacts like "- **URL:**"
     title = re.sub(r'^(-\s*)?(\*\*)?URL:?(\*\*)?:?\s*', '', title, flags=re.IGNORECASE)
     title = re.sub(r'^[\[\]"\'\-\:\.\s]+', '', title)
     title = re.sub(r'[\[\]"\']+$', '', title)
+    # Remove leading numbers and dots
     title = re.sub(r'^\d+[\.\)]\s*', '', title)
+    # Clean up whitespace
     title = title.strip()
     
+    # Validate - if title is suspiciously short or looks like metadata
     if len(title) < 10 or title.lower().startswith(('http', 'www', 'url', 'source', 'available')):
         return None
     
@@ -244,6 +208,7 @@ def extract_metadata_from_context(url: str, context: str, query: str) -> Dict:
     """Extract metadata from context WITHOUT API call"""
     domain = urlparse(url).netloc.lower()
     
+    # Default metadata
     metadata = {
         'title': f"Research on {query}"[:100],
         'authors': 'Author Unknown',
@@ -253,10 +218,12 @@ def extract_metadata_from_context(url: str, context: str, query: str) -> Dict:
         'type': 'article'
     }
     
+    # Extract year from URL or context
     year_match = re.search(r'(202[0-5])', url + context)
     if year_match:
         metadata['year'] = year_match.group(1)
     
+    # Extract arXiv ID
     if 'arxiv.org' in url:
         arxiv_match = re.search(r'(\d{4}\.\d{4,5})', url)
         if arxiv_match:
@@ -264,6 +231,7 @@ def extract_metadata_from_context(url: str, context: str, query: str) -> Dict:
         metadata['venue'] = 'arXiv'
         metadata['type'] = 'preprint'
     
+    # Set venue by domain
     if 'ieee.org' in url:
         metadata['venue'] = 'IEEE'
         metadata['type'] = 'conference_paper'
@@ -275,6 +243,7 @@ def extract_metadata_from_context(url: str, context: str, query: str) -> Dict:
     elif 'science.org' in url:
         metadata['venue'] = 'Science'
     
+    # Try to extract title from context
     sentences = context.split('.')
     for sentence in sentences[:5]:
         sentence = sentence.strip()
@@ -287,7 +256,7 @@ def extract_metadata_from_context(url: str, context: str, query: str) -> Dict:
     
     return metadata
 
-def batch_extract_titles_only(sources: List[Dict], try_haiku4: bool) -> List[Dict]:
+def batch_extract_titles_only(sources: List[Dict]) -> List[Dict]:
     """Extract ONLY titles in batch"""
     if not sources or len(sources) == 0:
         return sources
@@ -311,11 +280,7 @@ CRITICAL RULES:
 - If you cannot determine the title, use "Unknown Title"
 - Each title should be the actual research paper name"""
 
-        response = call_anthropic_api(
-            [{"role": "user", "content": prompt}], 
-            max_tokens=1000,
-            try_haiku4=try_haiku4
-        )
+        response = call_anthropic_api([{"role": "user", "content": prompt}], max_tokens=500)
         text = "".join([c['text'] for c in response['content'] if c['type'] == 'text'])
         result = parse_json_response(text)
         
@@ -362,7 +327,7 @@ def generate_phrase_variations(topic: str) -> List[str]:
     ]
     return variations
 
-def analyze_topic_with_ai(topic: str, subject: str, try_haiku4: bool) -> Dict:
+def analyze_topic_with_ai(topic: str, subject: str) -> Dict:
     update_progress('Topic Analysis', 'Creating research plan...', 10)
 
     variations = generate_phrase_variations(topic)
@@ -383,11 +348,7 @@ Return ONLY JSON:
 }}"""
 
     try:
-        response = call_anthropic_api(
-            [{"role": "user", "content": prompt}], 
-            max_tokens=800,
-            try_haiku4=try_haiku4
-        )
+        response = call_anthropic_api([{"role": "user", "content": prompt}], max_tokens=400)
         text = "".join([c['text'] for c in response['content'] if c['type'] == 'text'])
         result = parse_json_response(text)
         
@@ -413,7 +374,7 @@ Return ONLY JSON:
         ]
     }
 
-def execute_web_research_optimized(queries: List[str], topic: str, try_haiku4: bool) -> Tuple[List[Dict], List[Dict]]:
+def execute_web_research_optimized(queries: List[str], topic: str) -> Tuple[List[Dict], List[Dict]]:
     update_progress('Web Research', 'Searching...', 25)
     
     accepted = []
@@ -434,8 +395,7 @@ Provide URLs and context."""
             response = call_anthropic_api(
                 messages=[{"role": "user", "content": search_prompt}],
                 max_tokens=1500,
-                use_web_search=True,
-                try_haiku4=try_haiku4
+                use_web_search=True
             )
 
             full_text = ""
@@ -458,6 +418,7 @@ Provide URLs and context."""
                 context_end = min(len(full_text), url_pos + 400)
                 context = full_text[context_start:context_end]
                 
+                # Use smart extraction immediately
                 metadata = extract_metadata_from_context(url, context, query)
                 
                 accepted.append({
@@ -477,8 +438,9 @@ Provide URLs and context."""
 
     unique = deduplicate_sources(accepted)
     
+    # Batch extract titles ONLY
     update_progress('Web Research', 'Extracting titles...', 60)
-    unique = batch_extract_titles_only(unique, try_haiku4)
+    unique = batch_extract_titles_only(unique)
     
     st.info(f"✅ Found {len(unique)} sources ({len(rejected)} rejected)")
     
@@ -519,6 +481,7 @@ Content: {s.get('content', '')[:250]}""")
 
     sources_text = "\n\n".join(source_list)
 
+    # Stronger variation enforcement
     variations_text = f"""CRITICAL INSTRUCTION - PHRASE VARIATION:
 You MUST use these variations to avoid repetition:
 - "{topic}" - USE THIS SPARINGLY (maximum 5 times in entire report)
@@ -567,15 +530,11 @@ Return ONLY valid JSON:
   "conclusion": "..."
 }}"""
 
-    # Always use Sonnet 4 for final writing (quality matters)
-    response = call_anthropic_api(
-        [{"role": "user", "content": prompt}], 
-        max_tokens=6000,
-        try_haiku4=False  # Always Sonnet 4 for writing
-    )
+    response = call_anthropic_api([{"role": "user", "content": prompt}], max_tokens=6000)
     text = "".join([c['text'] for c in response['content'] if c['type'] == 'text'])
     draft = parse_json_response(text)
 
+    # Ensure all keys exist
     for key in ['abstract', 'introduction', 'literatureReview', 'mainSections',
                 'dataAnalysis', 'challenges', 'futureOutlook', 'conclusion']:
         if key not in draft or not draft[key]:
@@ -743,7 +702,6 @@ def execute_research_pipeline():
     st.session_state.is_processing = True
     st.session_state.step = 'processing'
     st.session_state.api_call_count = 0
-    st.session_state.estimated_cost = 0.0
     st.session_state.start_time = time.time()
 
     try:
@@ -752,17 +710,16 @@ def execute_research_pipeline():
 
         topic = st.session_state.form_data['topic']
         subject = st.session_state.form_data['subject']
-        try_haiku4 = st.session_state.form_data.get('try_haiku4', False)
 
         st.info(f"🔍 Stage 1/5: Analyzing...")
-        analysis = analyze_topic_with_ai(topic, subject, try_haiku4)
+        analysis = analyze_topic_with_ai(topic, subject)
         st.session_state.research.update({
             'subtopics': analysis['subtopics'],
             'queries': analysis['researchQueries']
         })
 
         st.info(f"🌐 Stage 2/5: Web research...")
-        sources, rejected = execute_web_research_optimized(analysis['researchQueries'], topic, try_haiku4)
+        sources, rejected = execute_web_research_optimized(analysis['researchQueries'], topic)
         st.session_state.research.update({
             'sources': sources,
             'rejected_sources': rejected
@@ -771,7 +728,7 @@ def execute_research_pipeline():
         if len(sources) < 3:
             raise Exception(f"Only {len(sources)} sources found. Need 3+.")
 
-        st.info(f"✍️ Stage 3/5: Writing (Sonnet 4)...")
+        st.info(f"✍️ Stage 3/5: Writing...")
         draft = generate_draft_optimized(
             topic, subject, analysis['subtopics'],
             sources, st.session_state.research['phrase_variations']
@@ -796,7 +753,7 @@ def execute_research_pipeline():
         
         exec_mins = int(st.session_state.execution_time // 60)
         exec_secs = int(st.session_state.execution_time % 60)
-        st.success(f"✅ Complete in {exec_mins}m {exec_secs}s! Cost: ${st.session_state.estimated_cost:.3f}")
+        st.success(f"✅ Complete in {exec_mins}m {exec_secs}s! {st.session_state.api_call_count} API calls, {len(sources)} sources")
 
     except Exception as e:
         if st.session_state.start_time:
@@ -813,13 +770,12 @@ def reset_system():
             del st.session_state[key]
     st.session_state.step = 'input'
     st.session_state.api_call_count = 0
-    st.session_state.estimated_cost = 0.0
     st.session_state.start_time = None
     st.session_state.execution_time = None
 
 # Main UI
 st.title("📝 Academic Report Writer Pro")
-st.markdown("**Version 3.9 - Stable Models (No Deprecations)**")
+st.markdown("**Version 3.2 - Fixed Citations & Metadata**")
 
 if st.session_state.step == 'input':
     st.markdown("### Configuration")
@@ -842,30 +798,16 @@ if st.session_state.step == 'input':
     with col4:
         style = st.selectbox("Citation Style", ["APA", "IEEE"])
 
-    st.markdown("---")
-    
-    try_haiku4 = st.checkbox(
-        "🧪 Try Haiku 4 (Experimental - may not be available)", 
-        value=st.session_state.form_data.get('try_haiku4', False),
-        help="If available: ~$0.15 per report. If not: Falls back to Sonnet 4 (~$0.80)"
-    )
-
     st.session_state.form_data.update({
         'topic': topic, 'subject': subject, 'researcher': researcher,
         'institution': institution, 'date': date.strftime('%Y-%m-%d'),
-        'citation_style': style, 'try_haiku4': try_haiku4
+        'citation_style': style
     })
 
     valid = all([topic, subject, researcher, institution])
 
     st.markdown("---")
-    
-    if try_haiku4:
-        st.info("🧪 **Experimental**: Will try Haiku 4. Falls back to Sonnet 4 if unavailable.")
-    else:
-        st.info("💵 **Standard**: Uses Sonnet 4 (your proven working model) - ~$0.80-1.00 per report")
-    
-    st.caption("⏱️ Time: 6-8 minutes | 🔧 Based on your working v3.2 | ✅ No deprecated models")
+    st.info("⏱️ **Time:** 6-8 minutes | 🔧 **Fixes:** Proper titles, better citations, phrase variation")
     
     if st.button("🚀 Generate Report", disabled=not valid or not API_AVAILABLE, type="primary", use_container_width=True):
         execute_research_pipeline()
@@ -890,7 +832,7 @@ elif st.session_state.step == 'processing':
         elapsed = time.time() - st.session_state.start_time
         elapsed_mins = int(elapsed // 60)
         elapsed_secs = int(elapsed % 60)
-        st.caption(f"⏱️ {elapsed_mins}m {elapsed_secs}s | 📞 {st.session_state.api_call_count} calls | 💰 ${st.session_state.estimated_cost:.3f}")
+        st.caption(f"⏱️ Elapsed: {elapsed_mins}m {elapsed_secs}s | API Calls: {st.session_state.api_call_count}")
     
     if st.session_state.research['sources']:
         with st.expander(f"🔍 Sources ({len(st.session_state.research['sources'])})", expanded=True):
@@ -904,17 +846,23 @@ elif st.session_state.step == 'processing':
 elif st.session_state.step == 'complete':
     st.success("✅ Report Generated Successfully!")
     
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.session_state.execution_time:
-            exec_mins = int(st.session_state.execution_time // 60)
-            exec_secs = int(st.session_state.execution_time % 60)
-            st.metric("⏱️ Time", f"{exec_mins}m {exec_secs}s")
-    with col2:
-        st.metric("💰 Cost", f"${st.session_state.estimated_cost:.3f}")
-    with col3:
-        st.metric("📞 API Calls", st.session_state.api_call_count)
+    if st.session_state.execution_time:
+        exec_mins = int(st.session_state.execution_time // 60)
+        exec_secs = int(st.session_state.execution_time % 60)
+        st.info(f"⏱️ **Execution Time:** {exec_mins} minutes {exec_secs} seconds")
     
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Sources", len(st.session_state.research['sources']))
+    with col2:
+        st.metric("Rejected", len(st.session_state.research.get('rejected_sources', [])))
+    with col3:
+        if st.session_state.research['sources']:
+            avg = sum(s['credibilityScore'] for s in st.session_state.research['sources']) / len(st.session_state.research['sources'])
+            st.metric("Avg Quality", f"{avg:.0f}%")
+    with col4:
+        st.metric("API Calls", st.session_state.api_call_count)
+
     st.markdown("---")
     
     col1, col2 = st.columns(2)
@@ -929,15 +877,86 @@ elif st.session_state.step == 'complete':
                 type="primary",
                 use_container_width=True
             )
+            st.info("""
+            **To create PDF:**
+            1. Open HTML in browser
+            2. Press Ctrl+P (Cmd+P on Mac)
+            3. Select "Save as PDF"
+            4. Click Save
+            """)
     
     with col2:
-        if st.button("🔄 Generate Another Report", type="secondary", use_container_width=True):
-            reset_system()
-            st.rerun()
+        st.metric("File Size", f"{len(st.session_state.html_report) / 1024:.1f} KB")
+        st.metric("Quality", f"{st.session_state.critique.get('overallScore', 0)}/100")
+    
+    st.markdown("---")
+    
+    with st.expander("📚 Sources Used", expanded=False):
+        for i, s in enumerate(st.session_state.research['sources'], 1):
+            meta = s.get('metadata', {})
+            st.markdown(f"""
+**[{i}]** {meta.get('title', 'Unknown')}  
+**Authors:** {meta.get('authors', 'Unknown')} ({meta.get('year', 'Unknown')})  
+**Venue:** {meta.get('venue', 'Unknown')}  
+**URL:** {s['url'][:80]}  
+**Credibility:** {s['credibilityScore']}% - {s.get('credibilityJustification', '')}
+
+---
+""")
+    
+    with st.expander("🚫 Rejected Sources", expanded=False):
+        rejected = st.session_state.research.get('rejected_sources', [])
+        if rejected:
+            for r in rejected:
+                st.markdown(f"❌ {r['url'][:80]}  \n**Reason:** {r['reason']}")
+        else:
+            st.info("No sources rejected")
+    
+    with st.expander("📊 Report Preview", expanded=False):
+        if st.session_state.final_report:
+            st.markdown("**Executive Summary:**")
+            st.write(st.session_state.final_report.get('executiveSummary', ''))
+            
+            st.markdown("**Abstract:**")
+            st.write(st.session_state.final_report.get('abstract', ''))
+    
+    st.markdown("---")
+    
+    if st.button("🔄 Generate Another Report", type="secondary", use_container_width=True):
+        reset_system()
+        st.rerun()
 
 elif st.session_state.step == 'error':
     st.error("❌ Error Occurred")
     st.warning(st.session_state.progress['detail'])
+    
+    if st.session_state.execution_time:
+        exec_mins = int(st.session_state.execution_time // 60)
+        exec_secs = int(st.session_state.execution_time % 60)
+        st.caption(f"Failed after {exec_mins}m {exec_secs}s")
+    
+    st.markdown("### 🔧 Troubleshooting")
+    st.markdown("""
+    **Common Issues:**
+    
+    1. **Rate Limiting**
+       - Wait 5 minutes before retry
+       - API has usage limits
+    
+    2. **Few Sources**
+       - Topic may be too niche
+       - Try broader terms
+       - Retry (results vary)
+    
+    3. **Timeout**
+       - Normal: 6-8 minutes
+       - Don't refresh during processing
+    
+    **Tips:**
+    - Use established topics
+    - Be specific but not narrow
+    - Examples: "Machine Learning", "Climate Change"
+    """)
     
     if st.button("🔄 Try Again", type="primary", use_container_width=True):
         reset_system()
@@ -946,8 +965,8 @@ elif st.session_state.step == 'error':
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #666; font-size: 0.85em;">
-    <strong>Version 3.9 - Stable Models Only</strong><br>
-    Based on your working v3.2 • No deprecated models • Sonnet 4 confirmed working<br>
-    Optional Haiku 4 trial with automatic Sonnet 4 fallback
+    <strong>Version 3.2 - Fixed Citations</strong><br>
+    Fixed: Title extraction • Author extraction • Phrase variation • Execution tracking<br>
+    5 queries • Smart metadata • APA/IEEE format • 6-8 minutes
 </div>
 """, unsafe_allow_html=True)
