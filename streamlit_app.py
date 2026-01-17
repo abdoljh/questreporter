@@ -204,11 +204,11 @@ def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000, use_haiku: 
         "anthropic-version": "2023-06-01"
     }
 
-    # Use PROVEN STABLE models
+    # Use Claude 3 models (compatible with all API keys)
     if use_haiku:
-        model = "claude-3-haiku-20240307"  # This model definitely works
+        model = "claude-3-haiku-20240307"  # Budget option
     else:
-        model = "claude-3-5-sonnet-20241022"  # Latest Sonnet
+        model = "claude-3-sonnet-20240229"  # Standard option (NOT 3.5)
 
     data = {
         "model": model,
