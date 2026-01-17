@@ -148,7 +148,7 @@ def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000, use_web_sea
     }
 
     data = {
-        "model": "claude-haiku-3-5-20241022",
+        "model": "claude-sonnet-4-20250514",
         "max_tokens": max_tokens,
         "messages": messages
     }
