@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 MODEL1="claude-sonnet-4-20250514"
 MODEL2="claude-haiku-3-5-20241022"
 MODEL3="claude-sonnet-4-20250514"
+MODEL4="claude-haiku-4-20250115"
 
 st.set_page_config(
     page_title="Academic Report Writer Pro",
@@ -150,7 +151,7 @@ def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000, use_web_sea
     }
     
     data = {
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-haiku-4-20250115",
         "max_tokens": max_tokens,
         "messages": messages
     }
