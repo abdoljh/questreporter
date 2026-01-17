@@ -1,13 +1,13 @@
 # streamlit_app.py
-# Version 3.2 - COMPLETE & FIXED
+# Version 3.1 - OPTIMIZED FOR SPEED
 # 
-# FIXES:
-# 1. Fixed metadata extraction (titles showing as "- **URL:**")
-# 2. Better title cleaning and validation
-# 3. Smart metadata extraction from URLs
-# 4. Improved phrase variation enforcement
-# 5. Execution time tracking
-# 6. Expected time: 6-8 minutes
+# KEY OPTIMIZATIONS:
+# 1. Batch metadata extraction (1 API call for ALL sources instead of 1 per source)
+# 2. Reduced queries (5 instead of 8)
+# 3. Smart URL parsing (no API for obvious metadata)
+# 4. Longer rate limiting (5s instead of 3s)
+# 5. Progress tracking for user feedback
+# 6. Expected time: 6-8 minutes (down from 20+)
 
 import streamlit as st
 import json
@@ -19,16 +19,13 @@ from typing import List, Dict, Any, Tuple
 import re
 from urllib.parse import urlparse
 
-# Define model in use
-#MODEL="claude-sonnet-4-20250514"
-MODEL="claude-haiku-3-5-20241022"
-
 st.set_page_config(
     page_title="Academic Report Writer Pro",
     page_icon="📝",
     layout="wide"
 )
 
+# Custom CSS
 st.markdown("""
 <style>
     .stProgress > div > div > div > div { background-color: #4F46E5; }
@@ -76,10 +73,6 @@ if 'api_call_count' not in st.session_state:
     st.session_state.api_call_count = 0
 if 'last_api_call_time' not in st.session_state:
     st.session_state.last_api_call_time = 0
-if 'start_time' not in st.session_state:
-    st.session_state.start_time = None
-if 'execution_time' not in st.session_state:
-    st.session_state.execution_time = None
 
 try:
     ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"]
@@ -88,6 +81,7 @@ except:
     st.error("⚠️ API key not found")
     API_AVAILABLE = False
 
+# Trusted domains
 TRUSTED_DOMAINS = {
     '.edu': 95, '.gov': 95, 'nature.com': 95, 'science.org': 95,
     'ieee.org': 95, 'acm.org': 95, 'springer.com': 90, 'arxiv.org': 90,
@@ -113,10 +107,11 @@ def calculate_credibility(url: str) -> Tuple[int, str]:
     return 0, "Not in trusted list"
 
 def rate_limit_wait():
+    """INCREASED wait time to 5 seconds"""
     current_time = time.time()
     time_since_last = current_time - st.session_state.last_api_call_time
     
-    min_wait = 5.0
+    min_wait = 5.0  # INCREASED from 3.0
     if time_since_last < min_wait:
         time.sleep(min_wait - time_since_last)
     
@@ -147,9 +142,9 @@ def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000, use_web_sea
         "x-api-key": ANTHROPIC_API_KEY,
         "anthropic-version": "2023-06-01"
     }
-    
+
     data = {
-        "model": MODEL,
+        "model": "claude-sonnet-4-20250514",
         "max_tokens": max_tokens,
         "messages": messages
     }
@@ -168,8 +163,8 @@ def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000, use_web_sea
             )
             
             if response.status_code == 429:
-                wait_time = 20 * (attempt + 1)
-                st.warning(f"⏳ Rate limited. Waiting {wait_time}s")
+                wait_time = 20 * (attempt + 1)  # INCREASED from 15
+                st.warning(f"⏳ Rate limited. Waiting {wait_time}s (attempt {attempt + 1}/{max_retries})")
                 time.sleep(wait_time)
                 continue
                 
@@ -183,32 +178,13 @@ def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000, use_web_sea
     
     raise Exception("Failed after retries")
 
-def clean_title(title: str) -> str:
-    """Clean extracted title from markdown and artifacts"""
-    # Remove markdown formatting
-    title = re.sub(r'\*\*|\*|__|_', '', title)
-    # Remove leading artifacts like "- **URL:**"
-    title = re.sub(r'^(-\s*)?(\*\*)?URL:?(\*\*)?:?\s*', '', title, flags=re.IGNORECASE)
-    title = re.sub(r'^[\[\]"\'\-\:\.\s]+', '', title)
-    title = re.sub(r'[\[\]"\']+$', '', title)
-    # Remove leading numbers and dots
-    title = re.sub(r'^\d+[\.\)]\s*', '', title)
-    # Clean up whitespace
-    title = title.strip()
-    
-    # Validate - if title is suspiciously short or looks like metadata
-    if len(title) < 10 or title.lower().startswith(('http', 'www', 'url', 'source', 'available')):
-        return None
-    
-    return title[:150]
-
-def extract_metadata_from_context(url: str, context: str, query: str) -> Dict:
-    """Extract metadata from context WITHOUT API call"""
+def extract_metadata_from_url(url: str, title: str) -> Dict:
+    """SMART EXTRACTION - Parse what we can WITHOUT API calls"""
     domain = urlparse(url).netloc.lower()
     
     # Default metadata
     metadata = {
-        'title': f"Research on {query}"[:100],
+        'title': title,
         'authors': 'Author Unknown',
         'year': '2024',
         'venue': domain.replace('www.', '').replace('.com', '').replace('.org', '').title(),
@@ -216,8 +192,8 @@ def extract_metadata_from_context(url: str, context: str, query: str) -> Dict:
         'type': 'article'
     }
     
-    # Extract year from URL or context
-    year_match = re.search(r'(202[0-5])', url + context)
+    # Extract year from URL if present
+    year_match = re.search(r'(20\d{2})', url)
     if year_match:
         metadata['year'] = year_match.group(1)
     
@@ -226,72 +202,64 @@ def extract_metadata_from_context(url: str, context: str, query: str) -> Dict:
         arxiv_match = re.search(r'(\d{4}\.\d{4,5})', url)
         if arxiv_match:
             metadata['doi'] = f"arXiv:{arxiv_match.group(1)}"
-        metadata['venue'] = 'arXiv'
-        metadata['type'] = 'preprint'
+            metadata['venue'] = 'arXiv'
+            metadata['type'] = 'preprint'
     
-    # Set venue by domain
+    # IEEE
     if 'ieee.org' in url:
         metadata['venue'] = 'IEEE'
         metadata['type'] = 'conference_paper'
-    elif 'acm.org' in url:
+    
+    # ACM
+    if 'acm.org' in url:
         metadata['venue'] = 'ACM Digital Library'
         metadata['type'] = 'conference_paper'
-    elif 'nature.com' in url:
-        metadata['venue'] = 'Nature'
-    elif 'science.org' in url:
-        metadata['venue'] = 'Science'
     
-    # Try to extract title from context
-    sentences = context.split('.')
-    for sentence in sentences[:5]:
-        sentence = sentence.strip()
-        if len(sentence) > 20 and len(sentence) < 200:
-            if not re.search(r'https?://', sentence):
-                cleaned = clean_title(sentence)
-                if cleaned and len(cleaned) > 15:
-                    metadata['title'] = cleaned
-                    break
+    # Nature/Science
+    if 'nature.com' in url:
+        metadata['venue'] = 'Nature'
+        metadata['type'] = 'article'
+    if 'science.org' in url:
+        metadata['venue'] = 'Science'
+        metadata['type'] = 'article'
     
     return metadata
 
-def batch_extract_titles_only(sources: List[Dict]) -> List[Dict]:
-    """Extract ONLY titles in batch"""
-    if not sources or len(sources) == 0:
+def batch_extract_metadata(sources: List[Dict]) -> List[Dict]:
+    """BATCH extraction - ONE API call for ALL sources"""
+    if not sources:
         return sources
     
+    # First, use smart extraction for all
+    for source in sources:
+        source['metadata'] = extract_metadata_from_url(source['url'], source['title'])
+    
+    # Then, enhance with ONE batch API call for titles only
     try:
-        sources_text = "\n".join([
-            f"[{i+1}] {s['url']}"
-            for i, s in enumerate(sources[:10])
+        sources_text = "\n\n".join([
+            f"[{i+1}] URL: {s['url']}\nContext: {s.get('content', '')[:200]}"
+            for i, s in enumerate(sources[:10])  # Limit to first 10
         ])
         
-        prompt = f"""Extract the paper/article TITLE for each URL below. 
+        prompt = f"""Extract ONLY the paper titles from these sources. Return as JSON array.
 
 {sources_text}
 
-Return as JSON array with ONLY the actual paper titles:
-{{"titles": ["Full Paper Title 1", "Full Paper Title 2", ...]}}
+Return ONLY:
+{{"titles": ["title1", "title2", ...]}}"""
 
-CRITICAL RULES:
-- Return ACTUAL paper titles, NOT placeholders
-- Do NOT return "URL", "**URL:**", "- URL:", or similar
-- If you cannot determine the title, use "Unknown Title"
-- Each title should be the actual research paper name"""
-
-        response = call_anthropic_api([{"role": "user", "content": prompt}], max_tokens=1000)
+        response = call_anthropic_api([{"role": "user", "content": prompt}], max_tokens=800)
         text = "".join([c['text'] for c in response['content'] if c['type'] == 'text'])
         result = parse_json_response(text)
         
         titles = result.get('titles', [])
         for i, title in enumerate(titles):
-            if i < len(sources):
-                cleaned = clean_title(str(title))
-                if cleaned and len(cleaned) > 15:
-                    sources[i]['metadata']['title'] = cleaned
-                    sources[i]['title'] = cleaned
+            if i < len(sources) and title and title != "Unknown":
+                sources[i]['metadata']['title'] = title[:150]
+                sources[i]['title'] = title[:150]
     
     except Exception as e:
-        st.warning(f"Title extraction failed: {e}")
+        st.warning(f"Batch metadata extraction skipped: {e}")
     
     return sources
 
@@ -315,13 +283,14 @@ def deduplicate_sources(sources: List[Dict]) -> List[Dict]:
     return unique
 
 def generate_phrase_variations(topic: str) -> List[str]:
+    """Generate variations - but simplified"""
     variations = [
         topic,
+        f"{topic} field",
+        f"{topic} domain",
         f"the field of {topic}",
-        f"{topic} research",
-        f"this domain",
-        f"this research area",
-        f"the {topic} field"
+        f"developments in {topic}",
+        f"{topic} research"
     ]
     return variations
 
@@ -335,7 +304,7 @@ def analyze_topic_with_ai(topic: str, subject: str) -> Dict:
 
 Create:
 1. 5 specific subtopics about "{topic}"
-2. 5 search queries for academic sources (2020-2025)
+2. 5 search queries for academic sources (recent 2020-2025)
 
 Target: .edu, .gov, IEEE, arXiv, ACM
 
@@ -373,22 +342,24 @@ Return ONLY JSON:
     }
 
 def execute_web_research_optimized(queries: List[str], topic: str) -> Tuple[List[Dict], List[Dict]]:
-    update_progress('Web Research', 'Searching...', 25)
+    """OPTIMIZED: Only 5 queries, batch metadata extraction"""
+    update_progress('Web Research', f'Searching for sources...', 25)
     
     accepted = []
     rejected = []
     
+    # REDUCED from 8 to 5 queries
     limited_queries = queries[:5]
     
     for i, query in enumerate(limited_queries):
-        progress = 25 + (i / len(limited_queries)) * 30
+        progress = 25 + (i / len(limited_queries)) * 30  # 25-55%
         update_progress('Web Research', f'Query {i+1}/{len(limited_queries)}: {query[:40]}...', progress)
 
         try:
             search_prompt = f"""Search: {query}
 
-Find recent academic papers from .edu, .gov, IEEE, ACM, arXiv.
-Provide URLs and context."""
+Find recent academic papers from trusted sources (.edu, .gov, IEEE, ACM, arXiv).
+Provide URLs and brief context."""
 
             response = call_anthropic_api(
                 messages=[{"role": "user", "content": search_prompt}],
@@ -401,6 +372,7 @@ Provide URLs and context."""
                 if block.get('type') == 'text':
                     full_text += block.get('text', '')
             
+            # Extract URLs
             url_pattern = r'https?://[^\s<>"{}|\\^`\[\]\)]+[^\s<>"{}|\\^`\[\]\).,;:!?\)]'
             found_urls = re.findall(url_pattern, full_text)
             
@@ -411,20 +383,22 @@ Provide URLs and context."""
                     rejected.append({'url': url, 'query': query, 'reason': justification})
                     continue
                 
+                # Extract title from context
                 url_pos = full_text.find(url)
-                context_start = max(0, url_pos - 400)
-                context_end = min(len(full_text), url_pos + 400)
+                context_start = max(0, url_pos - 300)
+                context_end = min(len(full_text), url_pos + 300)
                 context = full_text[context_start:context_end]
                 
-                # Use smart extraction immediately
-                metadata = extract_metadata_from_context(url, context, query)
+                lines = full_text[:url_pos].split('\n')
+                title_candidates = [l.strip() for l in lines[-3:] if l.strip() and not l.strip().startswith('http')]
+                title = title_candidates[-1] if title_candidates else f"Research: {topic}"
+                title = re.sub(r'^\d+\.\s*', '', title)[:120]
                 
                 accepted.append({
-                    'title': metadata['title'],
+                    'title': title,
                     'url': url,
                     'content': context.strip()[:500],
                     'query': query,
-                    'metadata': metadata,
                     'credibilityScore': score,
                     'credibilityJustification': justification,
                     'dateAccessed': datetime.now().isoformat()
@@ -434,11 +408,12 @@ Provide URLs and context."""
             st.warning(f"Query failed: {query[:40]}... ({str(e)})")
             continue
 
+    # Deduplicate
     unique = deduplicate_sources(accepted)
     
-    # Batch extract titles ONLY
-    update_progress('Web Research', 'Extracting titles...', 60)
-    unique = batch_extract_titles_only(unique)
+    # BATCH metadata extraction (ONE API call instead of N calls)
+    update_progress('Web Research', 'Extracting metadata...', 60)
+    unique = batch_extract_metadata(unique)
     
     st.info(f"✅ Found {len(unique)} sources ({len(rejected)} rejected)")
     
@@ -465,7 +440,7 @@ def format_citation_ieee(source: Dict, index: int) -> str:
     return f'[{index}] {authors}, "{title}," {venue}, {year}. Available: {url}'
 
 def generate_draft_optimized(topic: str, subject: str, subtopics: List[str], sources: List[Dict], variations: List[str]) -> Dict:
-    update_progress('Drafting', 'Writing report...', 65)
+    update_progress('Drafting', f'Writing report...', 65)
 
     if not sources:
         raise Exception("No sources")
@@ -473,50 +448,30 @@ def generate_draft_optimized(topic: str, subject: str, subtopics: List[str], sou
     source_list = []
     for i, s in enumerate(sources[:12], 1):
         meta = s.get('metadata', {})
-        source_list.append(f"""[{i}] {meta.get('title', 'Unknown')} ({meta.get('year', '2024')})
-{s['url'][:70]}
-Content: {s.get('content', '')[:250]}""")
+        source_list.append(f"""[{i}] {meta.get('authors', 'Unknown')} ({meta.get('year', '2024')}). {meta.get('title', 'Unknown')}. {s['url'][:60]}
+Content: {s.get('content', '')[:300]}""")
 
     sources_text = "\n\n".join(source_list)
-
-    # Stronger variation enforcement
-    variations_text = f"""CRITICAL INSTRUCTION - PHRASE VARIATION:
-You MUST use these variations to avoid repetition:
-- "{topic}" - USE THIS SPARINGLY (maximum 5 times in entire report)
-- "{variations[1]}" - PREFER THIS
-- "{variations[2]}" - USE THIS OFTEN
-- "this domain" - USE THIS
-- "this research area" - USE THIS
-
-DO NOT repeat the exact phrase "{topic}" more than 5 times total in the entire report.
-Use the variations listed above instead!"""
+    variations_text = f"Vary wording using: {', '.join(variations[:4])}"
 
     prompt = f"""Write academic report about "{topic}" in {subject}.
 
 {variations_text}
 
 REQUIREMENTS:
-- Use ONLY provided sources below
-- Cite as [Source N] throughout
-- Include specific data, statistics, and years from sources
-- VARY your phrasing - avoid repeating "{topic}" excessively
+- Use ONLY these sources
+- Cite as [Source N]
+- Include authors, years, specific data
+- Vary phrasing
 
 SUBTOPICS: {', '.join(subtopics)}
 
 SOURCES:
 {sources_text}
 
-Write these sections:
-1. Abstract (150-250 words)
-2. Introduction
-3. Literature Review
-4. 3-4 Main Sections covering the subtopics
-5. Data & Analysis
-6. Challenges
-7. Future Outlook
-8. Conclusion
+Sections: Abstract, Introduction, Literature Review, 3-4 Main Sections, Data Analysis, Challenges, Future Outlook, Conclusion
 
-Return ONLY valid JSON:
+Return JSON:
 {{
   "abstract": "...",
   "introduction": "...",
@@ -532,20 +487,21 @@ Return ONLY valid JSON:
     text = "".join([c['text'] for c in response['content'] if c['type'] == 'text'])
     draft = parse_json_response(text)
 
-    # Ensure all keys exist
+    # Ensure keys
     for key in ['abstract', 'introduction', 'literatureReview', 'mainSections',
                 'dataAnalysis', 'challenges', 'futureOutlook', 'conclusion']:
         if key not in draft or not draft[key]:
             if key == 'mainSections':
-                draft[key] = [{'title': 'Analysis', 'content': 'Content.'}]
+                draft[key] = [{'title': f'Analysis', 'content': 'Content.'}]
             else:
-                draft[key] = f"Section about the topic."
+                draft[key] = f"Section about {topic}."
 
     return draft
 
 def critique_draft_simple(draft: Dict, sources: List[Dict]) -> Dict:
     update_progress('Review', 'Quality check...', 80)
     
+    # Simple automated check
     draft_text = json.dumps(draft).lower()
     citation_count = draft_text.count('[source')
     
@@ -556,10 +512,11 @@ def critique_draft_simple(draft: Dict, sources: List[Dict]) -> Dict:
         'recommendations': ['Report generated successfully']
     }
 
-def refine_draft_simple(draft: Dict, topic: str, sources_count: int) -> Dict:
+def refine_draft_simple(draft: Dict, topic: str) -> Dict:
     update_progress('Refinement', 'Final polish...', 90)
     
-    draft['executiveSummary'] = f"This comprehensive report examines {topic}, analyzing key developments, challenges, and future directions based on {sources_count} authoritative academic sources."
+    # Add executive summary without extra API call
+    draft['executiveSummary'] = f"This comprehensive report examines {topic}, analyzing key developments, challenges, and future directions based on {len(st.session_state.research['sources'])} authoritative academic sources."
     
     return draft
 
@@ -700,7 +657,6 @@ def execute_research_pipeline():
     st.session_state.is_processing = True
     st.session_state.step = 'processing'
     st.session_state.api_call_count = 0
-    st.session_state.start_time = time.time()
 
     try:
         if not API_AVAILABLE:
@@ -709,14 +665,16 @@ def execute_research_pipeline():
         topic = st.session_state.form_data['topic']
         subject = st.session_state.form_data['subject']
 
-        st.info(f"🔍 Stage 1/5: Analyzing...")
+        # Stage 1
+        st.info(f"🔍 Stage 1/5: Analyzing '{topic}'...")
         analysis = analyze_topic_with_ai(topic, subject)
         st.session_state.research.update({
             'subtopics': analysis['subtopics'],
             'queries': analysis['researchQueries']
         })
 
-        st.info(f"🌐 Stage 2/5: Web research...")
+        # Stage 2
+        st.info(f"🌐 Stage 2/5: Web research (5 queries)...")
         sources, rejected = execute_web_research_optimized(analysis['researchQueries'], topic)
         st.session_state.research.update({
             'sources': sources,
@@ -726,36 +684,34 @@ def execute_research_pipeline():
         if len(sources) < 3:
             raise Exception(f"Only {len(sources)} sources found. Need 3+.")
 
-        st.info(f"✍️ Stage 3/5: Writing...")
+        # Stage 3
+        st.info(f"✍️ Stage 3/5: Writing draft...")
         draft = generate_draft_optimized(
             topic, subject, analysis['subtopics'],
             sources, st.session_state.research['phrase_variations']
         )
         st.session_state.draft = draft
 
+        # Stage 4 (simplified)
         st.info(f"🔍 Stage 4/5: Quality check...")
         critique = critique_draft_simple(draft, sources)
         st.session_state.critique = critique
 
-        st.info(f"✨ Stage 5/5: Refinement...")
-        refined = refine_draft_simple(draft, topic, len(sources))
+        # Stage 5 (simplified)
+        st.info(f"✨ Stage 5/5: Final refinement...")
+        refined = refine_draft_simple(draft, topic)
         st.session_state.final_report = refined
 
+        # Generate HTML
         html = generate_html_report_optimized(refined, st.session_state.form_data, sources)
         st.session_state.html_report = html
-
-        st.session_state.execution_time = time.time() - st.session_state.start_time
 
         update_progress("Complete", "Done!", 100)
         st.session_state.step = 'complete'
         
-        exec_mins = int(st.session_state.execution_time // 60)
-        exec_secs = int(st.session_state.execution_time % 60)
-        st.success(f"✅ Complete in {exec_mins}m {exec_secs}s! {st.session_state.api_call_count} API calls, {len(sources)} sources")
+        st.success(f"✅ Complete! {st.session_state.api_call_count} API calls, {len(sources)} sources")
 
     except Exception as e:
-        if st.session_state.start_time:
-            st.session_state.execution_time = time.time() - st.session_state.start_time
         update_progress("Error", str(e), 0)
         st.session_state.step = 'error'
         st.error(f"❌ {str(e)}")
@@ -768,33 +724,27 @@ def reset_system():
             del st.session_state[key]
     st.session_state.step = 'input'
     st.session_state.api_call_count = 0
-    st.session_state.start_time = None
-    st.session_state.execution_time = None
 
 # Main UI
 st.title("📝 Academic Report Writer Pro")
-st.markdown("**Version 3.2 - Fixed Citations & Metadata**")
+st.markdown("**Version 3.1 - Optimized for Speed (6-8 minutes)**")
 
 if st.session_state.step == 'input':
     st.markdown("### Configuration")
 
     col1, col2 = st.columns(2)
     with col1:
-        topic = st.text_input("Topic *", value=st.session_state.form_data['topic'], 
-                              placeholder="e.g., Quantum Computing")
-        subject = st.text_input("Subject *", value=st.session_state.form_data['subject'],
-                                placeholder="e.g., Computer Science")
+        topic = st.text_input("Topic *", value=st.session_state.form_data['topic'])
+        subject = st.text_input("Subject *", value=st.session_state.form_data['subject'])
     with col2:
-        researcher = st.text_input("Researcher *", value=st.session_state.form_data['researcher'],
-                                   placeholder="Your name")
-        institution = st.text_input("Institution *", value=st.session_state.form_data['institution'],
-                                    placeholder="University/Organization")
+        researcher = st.text_input("Researcher *", value=st.session_state.form_data['researcher'])
+        institution = st.text_input("Institution *", value=st.session_state.form_data['institution'])
 
     col3, col4 = st.columns(2)
     with col3:
         date = st.date_input("Date", value=datetime.strptime(st.session_state.form_data['date'], '%Y-%m-%d'))
     with col4:
-        style = st.selectbox("Citation Style", ["APA", "IEEE"])
+        style = st.selectbox("Citation", ["APA", "IEEE"])
 
     st.session_state.form_data.update({
         'topic': topic, 'subject': subject, 'researcher': researcher,
@@ -805,9 +755,9 @@ if st.session_state.step == 'input':
     valid = all([topic, subject, researcher, institution])
 
     st.markdown("---")
-    st.info("⏱️ **Time:** 6-8 minutes | 🔧 **Fixes:** Proper titles, better citations, phrase variation")
+    st.info("⏱️ **Expected time:** 6-8 minutes | 📊 **Optimizations:** Batch processing, reduced API calls")
     
-    if st.button("🚀 Generate Report", disabled=not valid or not API_AVAILABLE, type="primary", use_container_width=True):
+    if st.button("🚀 Generate Report", disabled=not valid or not API_AVAILABLE, type="primary"):
         execute_research_pipeline()
         st.rerun()
     
@@ -825,17 +775,12 @@ elif st.session_state.step == 'processing':
         st.metric("Progress", f"{st.session_state.progress['percent']}%")
     
     st.info(st.session_state.progress['detail'])
-    
-    if st.session_state.start_time:
-        elapsed = time.time() - st.session_state.start_time
-        elapsed_mins = int(elapsed // 60)
-        elapsed_secs = int(elapsed % 60)
-        st.caption(f"⏱️ Elapsed: {elapsed_mins}m {elapsed_secs}s | API Calls: {st.session_state.api_call_count}")
+    st.caption(f"API Calls: {st.session_state.api_call_count}")
     
     if st.session_state.research['sources']:
         with st.expander(f"🔍 Sources ({len(st.session_state.research['sources'])})", expanded=True):
             for i, s in enumerate(st.session_state.research['sources'][:10], 1):
-                st.markdown(f"**{i}.** {s['title'][:80]}  \n📊 {s['credibilityScore']}%")
+                st.markdown(f"**{i}.** {s['title'][:70]}  \n📊 {s['credibilityScore']}%")
     
     if st.session_state.is_processing:
         time.sleep(3)
@@ -843,11 +788,6 @@ elif st.session_state.step == 'processing':
 
 elif st.session_state.step == 'complete':
     st.success("✅ Report Generated Successfully!")
-    
-    if st.session_state.execution_time:
-        exec_mins = int(st.session_state.execution_time // 60)
-        exec_secs = int(st.session_state.execution_time % 60)
-        st.info(f"⏱️ **Execution Time:** {exec_mins} minutes {exec_secs} seconds")
     
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -877,7 +817,7 @@ elif st.session_state.step == 'complete':
             )
             st.info("""
             **To create PDF:**
-            1. Open HTML in browser
+            1. Open HTML file in browser
             2. Press Ctrl+P (Cmd+P on Mac)
             3. Select "Save as PDF"
             4. Click Save
@@ -885,7 +825,7 @@ elif st.session_state.step == 'complete':
     
     with col2:
         st.metric("File Size", f"{len(st.session_state.html_report) / 1024:.1f} KB")
-        st.metric("Quality", f"{st.session_state.critique.get('overallScore', 0)}/100")
+        st.metric("Quality Score", f"{st.session_state.critique.get('overallScore', 0)}/100")
     
     st.markdown("---")
     
@@ -893,8 +833,8 @@ elif st.session_state.step == 'complete':
         for i, s in enumerate(st.session_state.research['sources'], 1):
             meta = s.get('metadata', {})
             st.markdown(f"""
-**[{i}]** {meta.get('title', 'Unknown')}  
-**Authors:** {meta.get('authors', 'Unknown')} ({meta.get('year', 'Unknown')})  
+**[{i}]** {meta.get('authors', 'Unknown')} ({meta.get('year', 'Unknown')})  
+**Title:** {s['title']}  
 **Venue:** {meta.get('venue', 'Unknown')}  
 **URL:** {s['url'][:80]}  
 **Credibility:** {s['credibilityScore']}% - {s.get('credibilityJustification', '')}
@@ -908,7 +848,7 @@ elif st.session_state.step == 'complete':
             for r in rejected:
                 st.markdown(f"❌ {r['url'][:80]}  \n**Reason:** {r['reason']}")
         else:
-            st.info("No sources rejected")
+            st.info("No sources were rejected")
     
     with st.expander("📊 Report Preview", expanded=False):
         if st.session_state.final_report:
@@ -928,43 +868,39 @@ elif st.session_state.step == 'error':
     st.error("❌ Error Occurred")
     st.warning(st.session_state.progress['detail'])
     
-    if st.session_state.execution_time:
-        exec_mins = int(st.session_state.execution_time // 60)
-        exec_secs = int(st.session_state.execution_time % 60)
-        st.caption(f"Failed after {exec_mins}m {exec_secs}s")
-    
     st.markdown("### 🔧 Troubleshooting")
     st.markdown("""
     **Common Issues:**
     
     1. **Rate Limiting**
-       - Wait 5 minutes before retry
+       - Wait 5 minutes before retrying
        - API has usage limits
     
-    2. **Few Sources**
+    2. **Few Sources Found**
        - Topic may be too niche
        - Try broader terms
-       - Retry (results vary)
+       - Try again (results vary)
     
     3. **Timeout**
-       - Normal: 6-8 minutes
-       - Don't refresh during processing
+       - Normal process: 6-8 minutes
+       - Don't refresh page during processing
     
     **Tips:**
-    - Use established topics
+    - Use established topics with research
     - Be specific but not narrow
-    - Examples: "Machine Learning", "Climate Change"
+    - Good examples: "Machine Learning", "Climate Change", "Quantum Computing"
     """)
     
     if st.button("🔄 Try Again", type="primary", use_container_width=True):
         reset_system()
         st.rerun()
 
+# Footer
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #666; font-size: 0.85em;">
-    <strong>Version 3.2 - Fixed Citations</strong><br>
-    Fixed: Title extraction • Author extraction • Phrase variation • Execution tracking<br>
-    5 queries • Smart metadata • APA/IEEE format • 6-8 minutes
+    <strong>Version 3.1 - Speed Optimized</strong><br>
+    5 queries • Batch metadata • Smart extraction • 5s rate limiting<br>
+    Expected time: 6-8 minutes | Proper APA/IEEE citations
 </div>
 """, unsafe_allow_html=True)
