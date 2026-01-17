@@ -1,22 +1,12 @@
 # streamlit_app.py
-# Version 3.4 - FIXED WEB SEARCH
+# Version 3.6 - ULTRA FIXED
 # 
-# FIXES:
-# - Removed broken web_search API tool (404 error)
-# - Implemented direct search query formatting
-# - All other optimizations preserved
-# 
-# COST OPTIMIZATIONS (from v3.3):
-# 1. 3 web searches instead of 5 (40% reduction)
-# 2. Skip separate critique step (1 API call saved)
-# 3. Skip separate refinement step (1 API call saved)
-# 4. Executive summary added directly in draft
-# 5. 10-second rate limiting (more stable)
-# 6. Option to use Haiku for searches (95% cost savings)
-# 
-# TOTAL: 5 API calls instead of 10 (50% cost reduction)
-# Expected cost: $0.30-$0.40 per report (down from $0.60-$1.00)
-# Expected time: 4-5 minutes
+# FIXES IN v3.6:
+# - Added API key trimming (removes spaces)
+# - Fallback to claude-3-haiku-20240307 (proven stable model)
+# - Enhanced error messages with full details
+# - API connection test on startup
+# - Better model selection
 
 import streamlit as st
 import json
@@ -66,7 +56,7 @@ if 'form_data' not in st.session_state:
         'institution': '',
         'date': datetime.now().strftime('%Y-%m-%d'),
         'citation_style': 'APA',
-        'budget_mode': True  # NEW: Use Haiku for searches
+        'budget_mode': True
     }
 if 'progress' not in st.session_state:
     st.session_state.progress = {'stage': '', 'detail': '', 'percent': 0}
@@ -94,12 +84,17 @@ if 'execution_time' not in st.session_state:
     st.session_state.execution_time = None
 if 'estimated_cost' not in st.session_state:
     st.session_state.estimated_cost = 0.0
+if 'api_tested' not in st.session_state:
+    st.session_state.api_tested = False
+if 'api_working' not in st.session_state:
+    st.session_state.api_working = False
 
 try:
-    ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"]
+    # CRITICAL: Strip any whitespace from API key
+    ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"].strip()
     API_AVAILABLE = True
 except:
-    st.error("⚠️ API key not found")
+    ANTHROPIC_API_KEY = None
     API_AVAILABLE = False
 
 TRUSTED_DOMAINS = {
@@ -127,11 +122,11 @@ def calculate_credibility(url: str) -> Tuple[int, str]:
     return 0, "Not in trusted list"
 
 def rate_limit_wait():
-    """INCREASED to 10 seconds for stability and cost control"""
+    """Wait between API calls"""
     current_time = time.time()
     time_since_last = current_time - st.session_state.last_api_call_time
     
-    min_wait = 10.0  # INCREASED from 5.0
+    min_wait = 10.0
     if time_since_last < min_wait:
         time.sleep(min_wait - time_since_last)
     
@@ -140,14 +135,13 @@ def rate_limit_wait():
 
 def estimate_cost(tokens_used: int, model: str = "sonnet") -> float:
     """Estimate API cost"""
-    if model == "haiku":
-        input_cost = 0.25 / 1_000_000  # $0.25 per million
+    if "haiku" in model.lower():
+        input_cost = 0.25 / 1_000_000
         output_cost = 1.25 / 1_000_000
-    else:  # sonnet
-        input_cost = 3.00 / 1_000_000  # $3.00 per million
+    else:
+        input_cost = 3.00 / 1_000_000
         output_cost = 15.00 / 1_000_000
     
-    # Rough estimate: 60% input, 40% output
     return (tokens_used * 0.6 * input_cost) + (tokens_used * 0.4 * output_cost)
 
 def parse_json_response(text: str) -> Dict:
@@ -163,8 +157,42 @@ def parse_json_response(text: str) -> Dict:
                 pass
         return {}
 
+def test_api_connection() -> Tuple[bool, str]:
+    """Test if API is working"""
+    if not API_AVAILABLE or not ANTHROPIC_API_KEY:
+        return False, "API key not configured"
+    
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01"
+    }
+    
+    # Try with the stable Haiku model
+    data = {
+        "model": "claude-3-haiku-20240307",
+        "max_tokens": 50,
+        "messages": [{"role": "user", "content": "Reply with 'OK'"}]
+    }
+    
+    try:
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers=headers,
+            json=data,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            return True, "API working"
+        else:
+            return False, f"API Error {response.status_code}: {response.text[:200]}"
+            
+    except Exception as e:
+        return False, f"Connection error: {str(e)}"
+
 def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000, use_haiku: bool = False) -> Dict:
-    """Simplified API call without web search tool"""
+    """API call with proven stable models"""
     if not API_AVAILABLE:
         raise Exception("API key not configured")
 
@@ -176,8 +204,11 @@ def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000, use_haiku: 
         "anthropic-version": "2023-06-01"
     }
 
-    # Model selection based on budget mode - use simpler model names
-    model = "claude-3-5-haiku-20241022" if use_haiku else "claude-3-5-sonnet-20241022"
+    # Use PROVEN STABLE models
+    if use_haiku:
+        model = "claude-3-haiku-20240307"  # This model definitely works
+    else:
+        model = "claude-3-5-sonnet-20241022"  # Latest Sonnet
 
     data = {
         "model": model,
@@ -196,89 +227,30 @@ def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000, use_haiku: 
             )
             
             if response.status_code == 429:
-                wait_time = 30 * (attempt + 1)  # INCREASED from 20
+                wait_time = 30 * (attempt + 1)
                 st.warning(f"⏳ Rate limited. Waiting {wait_time}s")
                 time.sleep(wait_time)
                 continue
-                
-            response.raise_for_status()
             
+            if response.status_code != 200:
+                error_detail = response.text[:500]
+                raise Exception(f"API Error {response.status_code}: {error_detail}")
+                
             # Track cost
             result = response.json()
             usage = result.get('usage', {})
             tokens = usage.get('input_tokens', 0) + usage.get('output_tokens', 0)
-            cost = estimate_cost(tokens, "haiku" if use_haiku else "sonnet")
+            cost = estimate_cost(tokens, model)
             st.session_state.estimated_cost += cost
             
             return result
             
         except requests.exceptions.RequestException as e:
             if attempt == max_retries - 1:
-                raise
+                raise Exception(f"API call failed after {max_retries} attempts: {str(e)}")
             time.sleep(15 * (attempt + 1))
     
     raise Exception("Failed after retries")
-
-def clean_title(title: str) -> str:
-    """Clean extracted title"""
-    title = re.sub(r'\*\*|\*|__|_', '', title)
-    title = re.sub(r'^(-\s*)?(\*\*)?URL:?(\*\*)?:?\s*', '', title, flags=re.IGNORECASE)
-    title = re.sub(r'^[\[\]"\'\-\:\.\s]+', '', title)
-    title = re.sub(r'[\[\]"\']+$', '', title)
-    title = re.sub(r'^\d+[\.\)]\s*', '', title)
-    title = title.strip()
-    
-    if len(title) < 10 or title.lower().startswith(('http', 'www', 'url', 'source', 'available')):
-        return None
-    
-    return title[:150]
-
-def extract_metadata_from_context(url: str, context: str, query: str) -> Dict:
-    """Extract metadata WITHOUT API call"""
-    domain = urlparse(url).netloc.lower()
-    
-    metadata = {
-        'title': f"Research on {query}"[:100],
-        'authors': 'Author Unknown',
-        'year': '2024',
-        'venue': domain.replace('www.', '').replace('.com', '').replace('.org', '').title(),
-        'doi': None,
-        'type': 'article'
-    }
-    
-    year_match = re.search(r'(202[0-5])', url + context)
-    if year_match:
-        metadata['year'] = year_match.group(1)
-    
-    if 'arxiv.org' in url:
-        arxiv_match = re.search(r'(\d{4}\.\d{4,5})', url)
-        if arxiv_match:
-            metadata['doi'] = f"arXiv:{arxiv_match.group(1)}"
-        metadata['venue'] = 'arXiv'
-        metadata['type'] = 'preprint'
-    
-    if 'ieee.org' in url:
-        metadata['venue'] = 'IEEE'
-        metadata['type'] = 'conference_paper'
-    elif 'acm.org' in url:
-        metadata['venue'] = 'ACM Digital Library'
-        metadata['type'] = 'conference_paper'
-    elif 'nature.com' in url:
-        metadata['venue'] = 'Nature'
-    elif 'science.org' in url:
-        metadata['venue'] = 'Science'
-    
-    sentences = context.split('.')
-    for sentence in sentences[:5]:
-        sentence = sentence.strip()
-        if len(sentence) > 20 and len(sentence) < 200:
-            if not re.search(r'https?://', sentence):
-                cleaned = clean_title(sentence)
-                if cleaned and len(cleaned) > 15:
-                    metadata['title'] = cleaned
-                    break
-    
-    return metadata
 
 def normalize_url(url: str) -> str:
     url = re.sub(r'#.*$', '', url)
@@ -310,7 +282,7 @@ def generate_phrase_variations(topic: str) -> List[str]:
     ]
 
 def analyze_topic_with_ai(topic: str, subject: str) -> Dict:
-    """OPTIMIZED: Reduced token limit"""
+    """Create research plan"""
     update_progress('Topic Analysis', 'Creating research plan...', 10)
 
     variations = generate_phrase_variations(topic)
@@ -331,14 +303,14 @@ Return ONLY JSON:
 }}"""
 
     try:
-        response = call_anthropic_api([{"role": "user", "content": prompt}], max_tokens=600)  # REDUCED from 800
+        response = call_anthropic_api([{"role": "user", "content": prompt}], max_tokens=600)
         text = "".join([c['text'] for c in response['content'] if c['type'] == 'text'])
         result = parse_json_response(text)
         
         if result.get('subtopics') and result.get('researchQueries'):
             return result
-    except:
-        pass
+    except Exception as e:
+        st.warning(f"Topic analysis had issues: {str(e)}")
     
     return {
         "subtopics": [
@@ -356,13 +328,12 @@ Return ONLY JSON:
     }
 
 def execute_web_research_budget(queries: List[str], topic: str, use_budget_mode: bool) -> Tuple[List[Dict], List[Dict]]:
-    """Generate synthetic academic sources based on queries"""
+    """Generate synthetic academic sources"""
     update_progress('Web Research', 'Generating academic sources...', 25)
     
     accepted = []
     rejected = []
     
-    # REDUCED to 3 queries (was 5)
     limited_queries = queries[:3]
     
     for i, query in enumerate(limited_queries):
@@ -370,7 +341,6 @@ def execute_web_research_budget(queries: List[str], topic: str, use_budget_mode:
         update_progress('Web Research', f'Generating sources {i+1}/{len(limited_queries)}...', progress)
 
         try:
-            # Generate realistic academic sources using Claude
             search_prompt = f"""Generate 5 realistic academic source citations for: "{query}"
 
 Create citations that look like real academic papers from 2020-2025 from these trusted domains:
@@ -394,7 +364,6 @@ Summary: [2-3 sentences describing the research findings]
 
 Make the titles and summaries specific and relevant to "{query}"."""
 
-            # Use Haiku for searches if budget mode enabled
             response = call_anthropic_api(
                 messages=[{"role": "user", "content": search_prompt}],
                 max_tokens=1500,
@@ -406,35 +375,28 @@ Make the titles and summaries specific and relevant to "{query}"."""
                 if block.get('type') == 'text':
                     full_text += block.get('text', '')
             
-            # Extract structured information
-            sources_found = re.split(r'\[SOURCE \d+\]', full_text)[1:]  # Split by [SOURCE N] markers
+            sources_found = re.split(r'\[SOURCE \d+\]', full_text)[1:]
             
             for source_text in sources_found:
-                # Extract URL
                 url_match = re.search(r'URL:\s*(https?://[^\s]+)', source_text)
                 if not url_match:
                     continue
                 url = url_match.group(1).strip()
                 
-                # Check credibility
                 score, justification = calculate_credibility(url)
                 if score == 0:
                     rejected.append({'url': url, 'query': query, 'reason': justification})
                     continue
                 
-                # Extract title
                 title_match = re.search(r'Title:\s*([^\n]+)', source_text)
                 title = title_match.group(1).strip() if title_match else f"Research on {query}"
                 
-                # Extract year
                 year_match = re.search(r'Year:\s*(\d{4})', source_text)
                 year = year_match.group(1) if year_match else '2024'
                 
-                # Extract summary
                 summary_match = re.search(r'Summary:\s*([^\[]+)', source_text, re.DOTALL)
                 summary = summary_match.group(1).strip()[:500] if summary_match else ""
                 
-                # Create metadata
                 domain = urlparse(url).netloc.lower()
                 venue = domain.replace('www.', '').replace('.com', '').replace('.org', '').title()
                 
@@ -470,7 +432,7 @@ Make the titles and summaries specific and relevant to "{query}"."""
                 })
 
         except Exception as e:
-            st.warning(f"Generation failed for: {query[:40]}... ({str(e)})")
+            st.error(f"❌ Generation failed for: {query[:40]}... ({str(e)})")
             continue
 
     unique = deduplicate_sources(accepted)
@@ -478,7 +440,7 @@ Make the titles and summaries specific and relevant to "{query}"."""
     if len(unique) > 0:
         st.info(f"✅ Generated {len(unique)} sources ({len(rejected)} rejected)")
     else:
-        st.warning(f"⚠️ Only generated {len(unique)} sources")
+        st.error(f"⚠️ Only generated {len(unique)} sources - please check API connection")
     
     return unique, rejected
 
@@ -503,11 +465,11 @@ def format_citation_ieee(source: Dict, index: int) -> str:
     return f'[{index}] {authors}, "{title}," {venue}, {year}. Available: {url}'
 
 def generate_draft_with_executive_summary(topic: str, subject: str, subtopics: List[str], sources: List[Dict], variations: List[str]) -> Dict:
-    """OPTIMIZED: Generate draft WITH executive summary in ONE call"""
+    """Generate complete report"""
     update_progress('Drafting', 'Writing complete report...', 65)
 
     if not sources:
-        raise Exception("No sources")
+        raise Exception("No sources available")
 
     source_list = []
     for i, s in enumerate(sources[:12], 1):
@@ -565,11 +527,10 @@ Return JSON:
   "conclusion": "..."
 }}"""
 
-    response = call_anthropic_api([{"role": "user", "content": prompt}], max_tokens=5000)  # REDUCED from 6000
+    response = call_anthropic_api([{"role": "user", "content": prompt}], max_tokens=5000)
     text = "".join([c['text'] for c in response['content'] if c['type'] == 'text'])
     draft = parse_json_response(text)
 
-    # Ensure all keys
     for key in ['executiveSummary', 'abstract', 'introduction', 'literatureReview', 'mainSections',
                 'dataAnalysis', 'challenges', 'futureOutlook', 'conclusion']:
         if key not in draft or not draft[key]:
@@ -717,7 +678,7 @@ def generate_html_report(final_draft: Dict, form_data: Dict, sources: List[Dict]
     return html
 
 def execute_research_pipeline():
-    """OPTIMIZED PIPELINE: 5 API calls instead of 10"""
+    """Main pipeline"""
     st.session_state.is_processing = True
     st.session_state.step = 'processing'
     st.session_state.api_call_count = 0
@@ -732,7 +693,6 @@ def execute_research_pipeline():
         subject = st.session_state.form_data['subject']
         budget_mode = st.session_state.form_data.get('budget_mode', True)
 
-        # API CALL 1: Topic Analysis
         st.info(f"🔍 Stage 1/3: Analyzing... (API call 1/5)")
         analysis = analyze_topic_with_ai(topic, subject)
         st.session_state.research.update({
@@ -740,7 +700,6 @@ def execute_research_pipeline():
             'queries': analysis['researchQueries']
         })
 
-        # API CALLS 2-4: Web Research (3 calls)
         st.info(f"🌐 Stage 2/3: Generating research sources... (API calls 2-4/5)")
         sources, rejected = execute_web_research_budget(analysis['researchQueries'], topic, budget_mode)
         st.session_state.research.update({
@@ -749,9 +708,8 @@ def execute_research_pipeline():
         })
 
         if len(sources) < 3:
-            raise Exception(f"Only {len(sources)} sources found. Need 3+.")
+            raise Exception(f"Only {len(sources)} sources found. Need 3+. Check API connection.")
 
-        # API CALL 5: Draft with Executive Summary (NO separate critique/refinement)
         st.info(f"✍️ Stage 3/3: Writing complete report... (API call 5/5)")
         final_draft = generate_draft_with_executive_summary(
             topic, subject, analysis['subtopics'],
@@ -760,7 +718,6 @@ def execute_research_pipeline():
         st.session_state.draft = final_draft
         st.session_state.final_report = final_draft
 
-        # Generate HTML (no API call)
         html = generate_html_report(final_draft, st.session_state.form_data, sources)
         st.session_state.html_report = html
 
@@ -784,7 +741,7 @@ def execute_research_pipeline():
 
 def reset_system():
     for key in list(st.session_state.keys()):
-        if key not in ['form_data']:
+        if key not in ['form_data', 'api_tested', 'api_working']:
             del st.session_state[key]
     st.session_state.step = 'input'
     st.session_state.api_call_count = 0
@@ -794,8 +751,19 @@ def reset_system():
 
 # Main UI
 st.title("📝 Academic Report Writer Pro")
-st.markdown('<span class="cost-badge">💰 Budget Optimized v3.4 - FIXED</span>', unsafe_allow_html=True)
-st.markdown("**50% cost reduction • 5 API calls • 4-5 minutes • Web search fixed**")
+st.markdown('<span class="cost-badge">💰 v3.6 - Ultra Fixed</span>', unsafe_allow_html=True)
+
+# Test API on first load
+if API_AVAILABLE and not st.session_state.api_tested:
+    with st.spinner("Testing API connection..."):
+        st.session_state.api_working, message = test_api_connection()
+        st.session_state.api_tested = True
+        
+    if st.session_state.api_working:
+        st.success(f"✅ {message}")
+    else:
+        st.error(f"❌ {message}")
+        st.info("**Troubleshooting:**\n- Check your API key in Streamlit secrets\n- Ensure no extra spaces\n- Verify key starts with 'sk-ant-api03-'")
 
 if st.session_state.step == 'input':
     st.markdown("### Configuration")
@@ -818,12 +786,11 @@ if st.session_state.step == 'input':
     with col4:
         style = st.selectbox("Citation Style", ["APA", "IEEE"])
 
-    # BUDGET MODE TOGGLE
     st.markdown("---")
     budget_mode = st.checkbox(
-        "💰 Ultra Budget Mode (Use Claude Haiku for searches - 95% cheaper)", 
+        "💰 Ultra Budget Mode (Use Haiku for searches - 95% cheaper)", 
         value=st.session_state.form_data.get('budget_mode', True),
-        help="Haiku: $0.02/report | Sonnet: $0.30/report. Quality is still excellent!"
+        help="Haiku: $0.02/report | Sonnet: $0.30/report"
     )
 
     st.session_state.form_data.update({
@@ -836,23 +803,22 @@ if st.session_state.step == 'input':
 
     st.markdown("---")
     
-    # Cost information
     if budget_mode:
-        st.success("💰 **Ultra Budget Mode**: ~$0.02-$0.05 per report (Haiku for searches, Sonnet for writing)")
+        st.success("💰 **Ultra Budget Mode**: ~$0.02-$0.05 per report")
     else:
-        st.info("💵 **Standard Mode**: ~$0.30-$0.40 per report (Sonnet for all)")
+        st.info("💵 **Standard Mode**: ~$0.30-$0.40 per report")
     
-    st.caption("⏱️ Time: 4-5 minutes | 🔧 Optimized: 3 searches, 5 total API calls")
-    
-    if st.button("🚀 Generate Report", disabled=not valid or not API_AVAILABLE, type="primary", use_container_width=True):
+    if st.button("🚀 Generate Report", disabled=not valid or not API_AVAILABLE or not st.session_state.api_working, type="primary", use_container_width=True):
         execute_research_pipeline()
         st.rerun()
     
     if not valid:
         st.warning("⚠️ Fill all fields")
+    elif not st.session_state.api_working:
+        st.error("⚠️ API connection failed - check your API key")
 
 elif st.session_state.step == 'processing':
-    st.markdown("### 🔄 Processing (Budget Mode)")
+    st.markdown("### 🔄 Processing")
     
     col1, col2 = st.columns([4, 1])
     with col1:
@@ -894,20 +860,6 @@ elif st.session_state.step == 'complete':
     
     st.markdown("---")
     
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Sources", len(st.session_state.research['sources']))
-    with col2:
-        st.metric("Rejected", len(st.session_state.research.get('rejected_sources', [])))
-    with col3:
-        if st.session_state.research['sources']:
-            avg = sum(s['credibilityScore'] for s in st.session_state.research['sources']) / len(st.session_state.research['sources'])
-            st.metric("Avg Quality", f"{avg:.0f}%")
-    with col4:
-        st.metric("Quality", "80/100")
-
-    st.markdown("---")
-    
     col1, col2 = st.columns(2)
     with col1:
         if 'html_report' in st.session_state:
@@ -920,96 +872,16 @@ elif st.session_state.step == 'complete':
                 type="primary",
                 use_container_width=True
             )
-            st.info("""
-            **To create PDF:**
-            1. Open HTML in browser
-            2. Press Ctrl+P (Cmd+P)
-            3. Select "Save as PDF"
-            4. Save
-            """)
     
     with col2:
-        st.metric("File Size", f"{len(st.session_state.html_report) / 1024:.1f} KB")
-        
-        savings = 0.60 if st.session_state.form_data.get('budget_mode') else 0.30
-        st.metric("💰 Savings vs v3.2", f"${savings:.2f}")
-    
-    st.markdown("---")
-    
-    with st.expander("📚 Sources Used", expanded=False):
-        for i, s in enumerate(st.session_state.research['sources'], 1):
-            meta = s.get('metadata', {})
-            st.markdown(f"""
-**[{i}]** {meta.get('title', 'Unknown')}  
-**Year:** {meta.get('year', 'Unknown')} | **Venue:** {meta.get('venue', 'Unknown')}  
-**URL:** {s['url'][:80]}  
-**Credibility:** {s['credibilityScore']}%
-
----
-""")
-    
-    with st.expander("🚫 Rejected Sources", expanded=False):
-        rejected = st.session_state.research.get('rejected_sources', [])
-        if rejected:
-            for r in rejected:
-                st.markdown(f"❌ {r['url'][:80]}  \n**Reason:** {r['reason']}")
-        else:
-            st.info("No sources rejected")
-    
-    with st.expander("📊 Report Preview", expanded=False):
-        if st.session_state.final_report:
-            st.markdown("**Executive Summary:**")
-            st.write(st.session_state.final_report.get('executiveSummary', ''))
-            
-            st.markdown("**Abstract:**")
-            st.write(st.session_state.final_report.get('abstract', ''))
-    
-    st.markdown("---")
-    
-    if st.button("🔄 Generate Another Report", type="secondary", use_container_width=True):
-        reset_system()
-        st.rerun()
+        if st.button("🔄 Generate Another Report", type="secondary", use_container_width=True):
+            reset_system()
+            st.rerun()
 
 elif st.session_state.step == 'error':
     st.error("❌ Error Occurred")
     st.warning(st.session_state.progress['detail'])
     
-    if st.session_state.execution_time:
-        exec_mins = int(st.session_state.execution_time // 60)
-        exec_secs = int(st.session_state.execution_time % 60)
-        st.caption(f"Failed after {exec_mins}m {exec_secs}s | Cost: ${st.session_state.estimated_cost:.3f}")
-    
-    st.markdown("### 🔧 Troubleshooting")
-    st.markdown("""
-    **Common Issues:**
-    
-    1. **Rate Limiting**
-       - Wait 5 minutes before retry
-       - Budget mode has longer delays (10s)
-    
-    2. **Few Sources**
-       - Topic may be too niche
-       - Try broader terms
-    
-    3. **Timeout**
-       - Normal: 4-5 minutes
-       - Don't refresh page
-    
-    **Tips:**
-    - Use established research topics
-    - Enable Ultra Budget Mode for testing
-    - Examples: "Machine Learning", "Climate Change"
-    """)
-    
     if st.button("🔄 Try Again", type="primary", use_container_width=True):
         reset_system()
         st.rerun()
-
-st.markdown("---")
-st.markdown("""
-<div style="text-align: center; color: #666; font-size: 0.85em;">
-    <strong>Version 3.4 - Fixed Web Search</strong><br>
-    💰 50% cost reduction • 5 API calls (down from 10) • 4-5 minutes<br>
-    Ultra Budget Mode: ~$0.02/report | Standard: ~$0.35/report
-</div>
-""", unsafe_allow_html=True)
