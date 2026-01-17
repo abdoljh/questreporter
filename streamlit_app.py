@@ -19,6 +19,10 @@ from typing import List, Dict, Any, Tuple
 import re
 from urllib.parse import urlparse
 
+# Define model in use
+#MODEL="claude-sonnet-4-20250514"
+MODEL="claude-haiku-3-5-20241022"
+
 st.set_page_config(
     page_title="Academic Report Writer Pro",
     page_icon="📝",
@@ -144,7 +148,7 @@ def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000, use_web_sea
     }
 
     data = {
-        "model": "claude-sonnet-4-20250514",
+        "model": MODEL,
         "max_tokens": max_tokens,
         "messages": messages
     }
