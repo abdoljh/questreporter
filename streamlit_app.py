@@ -41,8 +41,8 @@ MODEL_PRIMARY = "claude-sonnet-4-20250514"
 MODEL_FALLBACK = "claude-haiku-3-5-20241022"
 
 # Rate limiting (optimized for speed)
-MIN_API_DELAY = 1.8  # Reduced from 5.0 to 2.0 seconds (minimum safe delay)
-RETRY_DELAYS = [5, 7, 10]  # Reduced from [5, 10, 15]
+MIN_API_DELAY = 2.0  # Reduced from 5.0 to 2.0 seconds (minimum safe delay)
+RETRY_DELAYS = [5, 10, 15]  # Reduced from [10, 20, 30]
 
 # Trusted domains for academic sources
 TRUSTED_DOMAINS = {
