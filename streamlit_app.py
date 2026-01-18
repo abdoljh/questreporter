@@ -1,5 +1,5 @@
 # ================================================================================
-# ACADEMIC REPORT WRITER PRO - VERSION 6.1 - CRITICAL FIX: Actually calls web_fetch_content!
+# ACADEMIC REPORT WRITER PRO - VERSION 6.2 - FIXED: Smart ArXiv URL conversion (abs→pdf)
 # ================================================================================
 # 
 # FEATURES:
@@ -233,9 +233,23 @@ def parse_json_response(text: str) -> Dict:
 
 def web_fetch_content(url: str) -> str:
     """
-    Fetch actual content from URL - THE KEY TO REAL METADATA EXTRACTION
-    This downloads PDFs and HTML pages to get real paper content
+    Fetch actual content from URL with SMART ArXiv handling
+    
+    Key fix: Converts ArXiv /abs/ URLs to /pdf/ URLs for actual content
     """
+    original_url = url
+    
+    # CRITICAL FIX: Convert ArXiv abstract pages to PDF URLs
+    if 'arxiv.org' in url.lower():
+        if '/abs/' in url:
+            # Convert /abs/XXXXX to /pdf/XXXXX.pdf
+            url = url.replace('/abs/', '/pdf/')
+            if not url.endswith('.pdf'):
+                url += '.pdf'
+        elif '/html/' in url:
+            # For HTML versions, try to get PDF instead
+            url = url.replace('/html/', '/pdf/').split('v')[0] + '.pdf'
+    
     try:
         response = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
         response.raise_for_status()
@@ -250,31 +264,49 @@ def web_fetch_content(url: str) -> str:
             try:
                 with pdfplumber.open(io.BytesIO(response.content)) as pdf:
                     text = ''
-                    # Extract from first 3 pages (enough for metadata)
+                    # Extract from first 3 pages
                     for page_num, page in enumerate(pdf.pages):
                         if page_num >= 3:
                             break
-                        text += page.extract_text() or ''
-                    return text[:5000]  # Limit size
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += page_text + '\n'
+                    
+                    if len(text) > 100:  # Got real content
+                        return text[:5000]
+                    else:
+                        return f"PDF extraction yielded minimal text from {original_url}"
             except Exception as pdf_e:
-                return f"Failed to extract PDF text: {pdf_e}"
+                return f"Failed to extract PDF text from {original_url}: {pdf_e}"
         
         # Handle HTML
         elif 'text/html' in content_type:
             try:
-                from bs4 import BeautifulSoup
                 soup = BeautifulSoup(response.text, 'html.parser')
-                # Remove scripts and styles
+                
+                # For ArXiv abstract pages, extract title and authors
+                if 'arxiv.org' in original_url and '/abs/' in original_url:
+                    title_tag = soup.find('h1', class_='title')
+                    authors_tag = soup.find('div', class_='authors')
+                    
+                    extracted = ""
+                    if title_tag:
+                        extracted += "Title: " + title_tag.get_text().replace('Title:', '').strip() + "\n"
+                    if authors_tag:
+                        extracted += "Authors: " + authors_tag.get_text().replace('Authors:', '').strip() + "\n"
+                    
+                    if extracted:
+                        return extracted[:5000]
+                
+                # General HTML extraction
                 for script_or_style in soup(['script', 'style']):
                     script_or_style.extract()
                 text = soup.get_text()
-                # Clean whitespace
                 lines = (line.strip() for line in text.splitlines())
                 chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
                 cleaned_text = '\n'.join(chunk for chunk in chunks if chunk)
                 return cleaned_text[:5000]
             except:
-                # Fallback to raw text
                 return response.text[:5000]
         
         # Plain text
@@ -285,7 +317,7 @@ def web_fetch_content(url: str) -> str:
             return f"Unsupported content type: {content_type}"
     
     except Exception as e:
-        return f"Failed to fetch content: {e}"
+        return f"Failed to fetch content from {original_url}: {e}"
 
 
 def rate_limit_wait():
