@@ -1,5 +1,5 @@
 # ================================================================================
-# ACADEMIC REPORT WRITER PRO - VERSION 6.0 - PDF FETCHING INTEGRATED (REAL FIX!)
+# ACADEMIC REPORT WRITER PRO - VERSION 6.1 - CRITICAL FIX: Actually calls web_fetch_content!
 # ================================================================================
 # 
 # FEATURES:
@@ -519,22 +519,19 @@ def extract_from_url_pattern(url: str) -> Dict:
 
 def enhance_metadata_with_api(metadata: Dict, url: str, context: str) -> Dict:
     """
-    Enhance metadata using API with REAL CONTENT FETCHING
+    Enhance metadata using API with REAL CONTENT
     This is the working code from test_metadata_extraction_v2.txt
     
     Args:
         metadata: Existing metadata from URL pattern
         url: Source URL
-        context: Text context around URL (from search - often not useful)
+        context: Actual PDF content (already fetched by caller)
     
     Returns:
         Enhanced metadata dict
     """
-    # CRITICAL FIX: Fetch actual content from URL instead of using search context
-    fetched_content = web_fetch_content(url)
-    
-    # Use fetched content if available, otherwise fallback to provided context
-    actual_content = fetched_content if fetched_content and not fetched_content.startswith('Failed') else context
+    # Use the provided context (which should be PDF content from web_fetch_content)
+    actual_content = context
     
     prompt = f"""You are a bibliographic metadata extraction expert. Extract accurate citation information.
 
