@@ -492,130 +492,89 @@ def extract_from_url_pattern(url: str) -> Dict:
     
     return metadata
 
-
 def enhance_metadata_with_api(metadata: Dict, url: str, context: str) -> Dict:
-    """
-    Enhance metadata using API with REAL CONTENT
-    This is the working code from test_metadata_extraction_v2.txt
+    """Uses successful logic from test_metadata_extraction_v2."""
     
-    Args:
-        metadata: Existing metadata from URL pattern
-        url: Source URL
-        context: Actual PDF content (already fetched by caller)
-    
-    Returns:
-        Enhanced metadata dict
-    """
-    # Use the provided context (which should be PDF content from web_fetch_content)
-    actual_content = context
-    
-    prompt = f"""You are a bibliographic metadata extraction expert. Extract accurate citation information.
+    prompt = f"""You are a bibliographic expert. Extract REAL metadata from the provided content.
 
 URL: {url}
+CONTENT HEADER: 
+{context[:3000]} 
 
-Actual content from the paper (first 5000 chars):
-{actual_content[:1000] if actual_content else "No content available"}
+INSTRUCTIONS:
+1. Extract the EXACT title of the research paper or article.
+2. Find the HUMAN authors (e.g., "John Doe, Jane Smith"). Look for names near the top.
+3. If and ONLY IF no human names exist, use the specific lab or organization.
+4. If the title looks like a URL or generic placeholder, find the real one in the content.
 
-Current metadata (from URL pattern):
-- Title: {metadata.get('title', 'Unknown')}
-- Authors: {metadata.get('authors', 'Unknown')}
-- Venue: {metadata.get('venue', 'Unknown')}
-- Year: {metadata.get('year', '2024')}
-
-Extract and return ONLY this JSON format:
+Return ONLY JSON:
 {{
-  "title": "Full exact paper/article title",
-  "authors": "Comma-separated author names (First Last format)",
-  "year": "Publication year YYYY",
-  "venue": "Journal/Conference name"
-}}
-
-CRITICAL RULES:
-1. title: Extract the EXACT paper title from the URL or context
-2. authors: Extract ACTUAL author names. If you cannot find ANY authors:
-   - For academic papers, try to extract from authorship sections
-   - Look for "by [name]" patterns
-   - Check for author lists in metadata
-   - ONLY if absolutely no authors found anywhere, use the venue/institution name
-3. year: Extract from URL path, DOI, or context (format: 2020-2025)
-4. venue: Extract journal/conference name from URL or context
-
-DO NOT use generic placeholders. Extract real information or use venue as fallback for authors."""
+  "title": "Exact Title",
+  "authors": "Name 1, Name 2, etc.",
+  "year": "YYYY",
+  "venue": "Journal/Conference/University"
+}}"""
 
     try:
-        response = call_anthropic_api(
-            [{"role": "user", "content": prompt}], 
-            max_tokens=800
-        )
+        # Call API (using your existing call_anthropic_api function)
+        response = call_anthropic_api([{"role": "user", "content": prompt}], max_tokens=1000)
         text = "".join([c['text'] for c in response['content'] if c['type'] == 'text'])
+        api_data = parse_json_response(text)
         
-        api_metadata = parse_json_response(text)
-        
-        # Only update if we got better information
-        if api_metadata.get('title') and len(api_metadata['title']) > 15:
-            if not api_metadata['title'].lower().startswith(('http', 'url:', 'context', 'arxiv preprint', 'ieee document')):
-                metadata['title'] = api_metadata['title']
-        
-        if api_metadata.get('authors'):
-            authors = api_metadata['authors'].strip()
-            # Only update if it's not a generic placeholder
-            if authors and authors.lower() not in ['unknown', 'author unknown', 'not available', 'not found']:
-                metadata['authors'] = authors
-        
-        if api_metadata.get('year'):
-            year_str = str(api_metadata['year'])
-            if re.match(r'202[0-5]', year_str):
-                metadata['year'] = year_str
-        
-        if api_metadata.get('venue') and len(api_metadata['venue']) > 2:
-            metadata['venue'] = api_metadata['venue']
-    
-    except Exception as e:
-        # Keep original metadata on error
-        pass
+        # Validation: If API returned real data, overwrite the URL-pattern defaults
+        if api_data.get('title') and len(api_data['title']) > 10:
+            metadata['title'] = api_data['title']
+        if api_data.get('authors') and "Contributors" not in api_data['authors']:
+            metadata['authors'] = api_data['authors']
+        if api_data.get('venue'):
+            metadata['venue'] = api_data['venue']
+        if api_data.get('year'):
+            metadata['year'] = api_data['year']
+            
+    except Exception:
+        pass # Fallback to URL-based metadata
     
     return metadata
 
-
 def batch_extract_metadata(sources: List[Dict]) -> List[Dict]:
     """
-    FIXED: Now actually fetches full content before extracting metadata.
+    CRITICAL FIX: Fetches full content for each source before LLM extraction.
     """
     if not sources:
         return sources
     
-    update_progress('Metadata Extraction', 'Fetching full content and extracting metadata...', 62)
+    update_progress('Metadata Extraction', 'Fetching full content and real authors...', 62)
     
-    # Process sources (limit to 12-15 for performance)
-    for i, source in enumerate(sources[:15]):
-        # Update progress UI
-        progress = 62 + (i / len(sources[:15])) * 8
-        update_progress('Metadata Extraction', f'Processing source {i+1}/{len(sources[:15])}...', int(progress))
+    # Process sources (limit to 12 for speed/cost)
+    for i, source in enumerate(sources[:12]):
+        progress = 62 + (i / 12) * 8
+        update_progress('Metadata Extraction', f'Analyzing source {i+1}/12...', int(progress))
         
         try:
-            # 1. CRITICAL STEP: Actually fetch the full page/PDF content
-            # Your current script defines this function but doesn't use it here!
+            # 1. Fetch real content (PDF text or HTML)
             full_content = web_fetch_content(source['url'])
             
-            # 2. Update the source object with the real content
-            if full_content and "Failed to fetch" not in full_content:
+            # 2. Update the source with real content
+            if full_content and "Failed" not in full_content:
                 source['content'] = full_content
             
-            # 3. Use the enhanced LLM extraction with the full content
+            # 3. Call the API with the FULL content, not just a snippet
+            # Pass the context directly to ensure it has the header of the paper
             enhanced = enhance_metadata_with_api(
                 source['metadata'],
                 source['url'],
-                source.get('content', '') # Now contains the real text from web_fetch_content
+                source['content']
             )
             
+            # Update source with the new, verified data
             source['metadata'] = enhanced
             source['title'] = enhanced.get('title', source['title'])
             
-        except Exception as e:
-            # If one fails, continue to the next
+        except Exception:
             continue
-    
+            
     return sources
+
 
 # ================================================================================
 # CITATION FORMATTING
@@ -826,7 +785,8 @@ Provide URLs and context."""
                 metadata = extract_from_url_pattern(url)
                 
                 accepted.append({
-                    'title': metadata.get('title', f'Research on {topic}'),
+                    'title': metadata.get('title', 'Pending extraction...'),
+
                     'url': url,
                     'content': context.strip()[:500],
                     'query': query,
