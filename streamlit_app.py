@@ -277,43 +277,61 @@ def web_fetch_content(url: str) -> str:
     except Exception as e:
         return f"Fetch failed: {e}"
 
-def enhancemetadatawithapi(meta: dict[str, Any], url: str, context: str) -> dict[str, Any]:
-    """Exact test notebook prompt + validation."""
+def enhancemetadatawithapi(metadata, url, context):
+    """Enhance metadata using API with REAL CONTENT - NO TYPE HINTS"""
+    actual_content = context[:1000] if context else "No content available"
+    
     prompt = f"""You are a bibliographic metadata extraction expert. Extract accurate citation information.
-
 URL: {url}
-Actual content from paper (first 8000 chars): {context[:2000] if context else "No content"}
+Actual content from the paper first 5000 chars: {actual_content}
 
-Current meta Title='{metadata.get('title')}', Authors='{metadata.get('authors')}'
+Current metadata from URL pattern:
+- Title: {metadata.get('title', 'Unknown')}
+- Authors: {metadata.get('authors', 'Unknown')}
+- Venue: {metadata.get('venue', 'Unknown')}
+- Year: {metadata.get('year', '2024')}
 
-Return ONLY JSON:
-{{"title": "Full exact title", "authors": "Comma-separated First Last", "year": "YYYY", "venue": "Journal/Conf"}}
+Extract and return ONLY this JSON format:
+{{
+  "title": "Full exact paper/article title",
+  "authors": "Comma-separated author names First Last format",
+  "year": "Publication year YYYY",
+  "venue": "Journal/Conference name"
+}}
 
-RULES:
-1. title: EXACT paper title from content/title tag (not arXiv/URL fragments)
-2. authors: Real names from byline/authors section. If none, use null
-3. year: From content/URL (2020-2026)
-4. venue: Exact journal/conf name
-Use null if uncertain. ONLY JSON."""
+CRITICAL RULES:
+1. title: Extract the EXACT paper title from the URL or context
+2. authors: Extract ACTUAL author names. If cannot find ANY authors use venue/institution name
+3. year: Extract from URL path, DOI, or context (format 2020-2025)
+4. venue: Extract journal/conference name from URL or context"""
 
     try:
-        response = call_anthropic_api([{"role": "user", "content": prompt}], 800)
-        text = "".join(c['text'] for c in response['content'] if c['type'] == 'text')
-        api_meta = parse_json_response(text)
+        response = call_anthropic_api([{"role": "user", "content": prompt}], maxtokens=800)
+        api_metadata = parse_json_response("\n".join([c["text"] for c in response["content"] if c["type"] == "text"]))
         
-        # Strict validation from test
-        if api_meta.get('title') and len(str(api_meta['title'])) > 20 and \
-           not str(api_meta['title']).lower().startswith(('http', 'arxiv preprint', 'research', 'ieee document')):
-            metadata['title'] = str(api_meta['title']).strip()
-        if api_meta.get('authors') and str(api_meta['authors']).lower() not in ('unknown', 'null', 'none'):
-            metadata['authors'] = str(api_meta['authors']).strip()
-        if api_meta.get('year') and re.match(r'20[2-6]\d', str(api_meta['year'])):
-            metadata['year'] = str(api_meta['year'])
-        if api_meta.get('venue') and len(str(api_meta['venue'])) > 2:
-            metadata['venue'] = str(api_meta['venue'])
-        return metadata
-    except:
-        return metadata  # Keep URL fallback
+        # Only update if we got better information
+        if api_metadata.get("title") and len(api_metadata["title"]) > 15:
+            if not api_metadata["title"].lower().startswith(("http", "url", "context", "arxiv preprint", "ieee document")):
+                metadata["title"] = api_metadata["title"]
+        
+        if api_metadata.get("authors"):
+            authors = api_metadata["authors"].strip()
+            if authors.lower() not in ["unknown", "author unknown", "not available", "not found"]:
+                metadata["authors"] = authors
+        
+        if api_metadata.get("year"):
+            year_str = str(api_metadata["year"]).strip()
+            if re.match(r"20[2-5][0-9]", year_str):
+                metadata["year"] = year_str
+        
+        if api_metadata.get("venue") and len(api_metadata["venue"]) > 2:
+            metadata["venue"] = api_metadata["venue"]
+            
+    except Exception:
+        pass  # Keep original metadata on error
+    
+    return metadata
+
 
 def update_progress(stage: str, detail: str, percent: int):
     st.session_state.progress = {'stage': stage, 'detail': detail, 'percent': min(100, percent)}
