@@ -232,134 +232,37 @@ def parse_json_response(text: str) -> Dict:
 
 
 def web_fetch_content(url: str) -> str:
-    """Enhanced fetch preferring PDF for arXiv, improved HTML parsing."""
+    """Fetches content from a URL, with special handling for PDFs."""
     try:
-        # Prefer PDF for arXiv
-        if 'arxiv.org' in url:
-            pdf_url = url.replace('/html/', '/pdf/').replace('/abs/', '/pdf/')
-            response = requests.get(pdf_url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
-            if response.status_code == 200 and 'application/pdf' in response.headers.get('Content-Type', ''):
-                try:
-                    with pdfplumber.open(io.BytesIO(response.content)) as pdf:
-                        text = ''
-                        for page_num, page in enumerate(pdf.pages[:5]):  # First 5 pages
-                            text += page.extract_text() or ''
-                        return text[:8000]  # More context
-                except:
-                    pass  # Fall back to original URL
-        
-        response = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
-        content_type = response.headers.get('Content-Type', '')
 
-        if 'application/pdf' in content_type or '.pdf' in url.lower():
-            if PDFSUPPORT:
+        # Handle PDFs
+        if url.lower().endswith('.pdf') or 'application/pdf' in response.headers.get('Content-Type', ''):
+            if PDF_SUPPORT:
                 with pdfplumber.open(io.BytesIO(response.content)) as pdf:
-                    text = ''
-                    for page_num, page in enumerate(pdf.pages[:5]):
-                        text += page.extract_text() or ''
-                    return text[:8000]
-            return "PDF detected but pdfplumber unavailable"
+                    # Extract text from first 3 pages (usually contains metadata)
+                    pages = pdf.pages[:3]
+                    text = "\\n".join([p.extract_text() for p in pages if p.extract_text()])
+                    return text[:5000] # Return enough for metadata extraction
+            return "PDF Content (Requires PDF Parser)"
 
-        elif 'text/html' in content_type:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            # Better cleaning: keep abstract/authors, remove TOC/scripts
-            for elem in soup(['script', 'style', 'nav']):
-                elem.extract()
-            text = soup.get_text(separator=' ', strip=True)
-            # Extract title/authors explicitly
-            title = soup.find('title')
-            authors = soup.find(attrs={'class': re.compile(r'author', re.I)}) or soup.find('span', class_=re.compile(r'creator|author'))
-            extra = f"Title: {title.get_text(strip=True) if title else ''}. Authors: {authors.get_text(strip=True) if authors else ''}."
-            return (extra + text)[:8000]
-
-        return response.text[:8000]
+        # Handle HTML
+        soup = BeautifulSoup(response.text, 'html.parser')
+        # Remove script and style elements
+        for script in soup(["script", "style"]):
+            script.extract()
+        
+        text = soup.get_text(separator=' ')
+        # Clean up whitespace
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = '\\n'.join(chunk for chunk in chunks if chunk)
+        
+        return text[:5000]
     except Exception as e:
-        return f"Fetch failed: {e}"
-
-def enhancemetadatawithapi(metadata, url, context):
-    """Enhance metadata using API with REAL CONTENT - NO TYPE HINTS"""
-    actual_content = context[:1000] if context else "No content available"
-    
-    prompt = f"""You are a bibliographic metadata extraction expert. Extract accurate citation information.
-URL: {url}
-Actual content from the paper first 5000 chars: {actual_content}
-
-Current metadata from URL pattern:
-- Title: {metadata.get('title', 'Unknown')}
-- Authors: {metadata.get('authors', 'Unknown')}
-- Venue: {metadata.get('venue', 'Unknown')}
-- Year: {metadata.get('year', '2024')}
-
-Extract and return ONLY this JSON format:
-{{
-  "title": "Full exact paper/article title",
-  "authors": "Comma-separated author names First Last format",
-  "year": "Publication year YYYY",
-  "venue": "Journal/Conference name"
-}}
-
-CRITICAL RULES:
-1. title: Extract the EXACT paper title from the URL or context
-2. authors: Extract ACTUAL author names. If cannot find ANY authors use venue/institution name
-3. year: Extract from URL path, DOI, or context (format 2020-2025)
-4. venue: Extract journal/conference name from URL or context"""
-
-    try:
-        response = call_anthropic_api([{"role": "user", "content": prompt}], maxtokens=800)
-        api_metadata = parse_json_response("\n".join([c["text"] for c in response["content"] if c["type"] == "text"]))
-        
-        # Only update if we got better information
-        if api_metadata.get("title") and len(api_metadata["title"]) > 15:
-            if not api_metadata["title"].lower().startswith(("http", "url", "context", "arxiv preprint", "ieee document")):
-                metadata["title"] = api_metadata["title"]
-        
-        if api_metadata.get("authors"):
-            authors = api_metadata["authors"].strip()
-            if authors.lower() not in ["unknown", "author unknown", "not available", "not found"]:
-                metadata["authors"] = authors
-        
-        if api_metadata.get("year"):
-            year_str = str(api_metadata["year"]).strip()
-            if re.match(r"20[2-5][0-9]", year_str):
-                metadata["year"] = year_str
-        
-        if api_metadata.get("venue") and len(api_metadata["venue"]) > 2:
-            metadata["venue"] = api_metadata["venue"]
-            
-    except Exception:
-        pass  # Keep original metadata on error
-    
-    return metadata
-
-
-def update_progress(stage: str, detail: str, percent: int):
-    st.session_state.progress = {'stage': stage, 'detail': detail, 'percent': min(100, percent)}
-
-
-def batchextractmetadata(sources: List[Dict]) -> List[Dict]:
-    """Batch enhance metadata - FIXED syntax + progress + error handling."""
-    if not sources:
-        return sources
-    
-    update_progress("Metadata Extraction", "Extracting titles/authors...", 62)
-    
-    for i, source in enumerate(sources[:15]):  # Limit API costs
-        if i % 5 == 0:
-            progress = 62 + (i // 5) * 8
-            update_progress("Metadata Extraction", f"Processing source {i+1}/{min(15, len(sources))}", progress)
-        
-        try:
-            # FIX: Proper copy + call + assignment
-            source_meta = source.get('metadata', {}).copy()
-            enhanced = enhancemetadatawithapi(source_meta, source['url'], source.get('content', ''))
-            source['metadata'] = enhanced  # FIXED assignment
-            source['title'] = enhanced.get('title', source.get('title', 'Research Article'))
-        except Exception as e:
-            st.warning(f"Metadata enhancement failed for source {i+1}: {e}")
-            # Keep original on error
-    
-    return sources
+        return f"Error fetching content: {str(e)}"
 
 def rate_limit_wait():
     """
@@ -676,44 +579,43 @@ DO NOT use generic placeholders. Extract real information or use venue as fallba
 
 def batch_extract_metadata(sources: List[Dict]) -> List[Dict]:
     """
-    Extract metadata for multiple sources using API
-    Optimized to process up to 15 sources efficiently
-    
-    Args:
-        sources: List of source dicts
-    
-    Returns:
-        Sources with enhanced metadata
+    FIXED: Now actually fetches full content before extracting metadata.
     """
     if not sources:
         return sources
     
-    update_progress('Metadata Extraction', 'Extracting titles and authors...', 62)
+    update_progress('Metadata Extraction', 'Fetching full content and extracting metadata...', 62)
     
-    # Limit to 15 sources to control API costs
+    # Process sources (limit to 12-15 for performance)
     for i, source in enumerate(sources[:15]):
-        if i > 0 and i % 5 == 0:
-            progress = 62 + (i / min(15, len(sources))) * 8
-            update_progress(
-                'Metadata Extraction', 
-                f'Processing source {i+1}/{min(15, len(sources))}...', 
-                progress
-            )
+        # Update progress UI
+        progress = 62 + (i / len(sources[:15])) * 8
+        update_progress('Metadata Extraction', f'Processing source {i+1}/{len(sources[:15])}...', int(progress))
         
         try:
+            # 1. CRITICAL STEP: Actually fetch the full page/PDF content
+            # Your current script defines this function but doesn't use it here!
+            full_content = web_fetch_content(source['url'])
+            
+            # 2. Update the source object with the real content
+            if full_content and "Failed to fetch" not in full_content:
+                source['content'] = full_content
+            
+            # 3. Use the enhanced LLM extraction with the full content
             enhanced = enhance_metadata_with_api(
                 source['metadata'],
                 source['url'],
-                source.get('content', '')
+                source.get('content', '') # Now contains the real text from web_fetch_content
             )
+            
             source['metadata'] = enhanced
             source['title'] = enhanced.get('title', source['title'])
+            
         except Exception as e:
-            # Continue with next source on error
+            # If one fails, continue to the next
             continue
     
     return sources
-
 
 # ================================================================================
 # CITATION FORMATTING
@@ -1622,5 +1524,3 @@ st.markdown("""
 # ================================================================================
 # END OF FILE
 # ================================================================================
-
-
