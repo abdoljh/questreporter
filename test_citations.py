@@ -13,7 +13,7 @@ from typing import Dict
 
 
 # ================================================================================
-# COPY OF CURRENT FORMATTING FUNCTIONS (for comparison)
+# COPY OF ORIGINAL FORMATTING FUNCTION (for comparison)
 # ================================================================================
 
 def format_citation_ieee_original(source: Dict, index: int) -> str:
@@ -37,38 +37,10 @@ def format_citation_ieee_original(source: Dict, index: int) -> str:
 
 
 # ================================================================================
-# IMPROVED IEEE FORMATTING FUNCTION
+# FIXED IEEE FORMATTING FUNCTIONS (User's Custom Style)
 # ================================================================================
 
-def format_author_ieee(name: str) -> str:
-    """
-    Convert author name to IEEE format: "A. B. Lastname"
-
-    Examples:
-        "John Smith" -> "J. Smith"
-        "John David Smith" -> "J. D. Smith"
-        "J. Smith" -> "J. Smith" (already formatted)
-    """
-    name = name.strip()
-    if not name:
-        return name
-
-    # Already in initial format (e.g., "J. Smith")
-    if re.match(r'^[A-Z]\.\s', name):
-        return name
-
-    parts = name.split()
-    if len(parts) == 1:
-        return parts[0]
-
-    # Last part is surname, rest are given names -> convert to initials
-    surname = parts[-1]
-    initials = [p[0].upper() + '.' for p in parts[:-1] if p]
-
-    return ' '.join(initials) + ' ' + surname
-
-
-# Institutional/organizational names that should NOT be converted to initials
+# Institutional/organizational names that should NOT be modified
 INSTITUTIONAL_NAMES = {
     'research team', 'authors', 'contributors', 'editors', 'staff',
     'ieee authors', 'acm authors', 'arxiv contributors', 'nature authors',
@@ -78,12 +50,10 @@ INSTITUTIONAL_NAMES = {
 
 
 def is_institutional_name(name: str) -> bool:
-    """Check if name is an institutional/organizational name that shouldn't be formatted"""
+    """Check if name is an institutional/organizational name"""
     name_lower = name.lower().strip()
-    # Check direct matches
     if name_lower in INSTITUTIONAL_NAMES:
         return True
-    # Check if it ends with common institutional suffixes
     for suffix in ['authors', 'contributors', 'team', 'staff', 'editors', 'group']:
         if name_lower.endswith(suffix):
             return True
@@ -92,35 +62,25 @@ def is_institutional_name(name: str) -> bool:
 
 def format_authors_ieee(authors_str: str) -> str:
     """
-    Format multiple authors for IEEE style.
+    Format multiple authors for IEEE style (full names preserved).
 
-    IEEE format:
-    - Single author: "A. B. Lastname"
-    - Two authors: "A. B. Lastname and C. D. Lastname"
-    - Three+ authors: "A. B. Lastname, C. D. Lastname, and E. F. Lastname"
-
-    Institutional names (like "IEEE Authors", "Research Team") are NOT formatted.
-
-    Examples:
-        "John Smith" -> "J. Smith"
-        "John Smith, Jane Doe" -> "J. Smith and J. Doe"
-        "IEEE Authors" -> "IEEE Authors" (institutional, not formatted)
+    Format:
+    - Two authors: "Author One and Author Two"
+    - Three+ authors: "Author One, Author Two, and Author Three"
+    - Institutional names preserved as-is
+    - "et al." preserved
     """
     if not authors_str:
         return "Research Team"
 
-    # Check if this is an institutional name - don't format these
     if is_institutional_name(authors_str):
         return authors_str
 
-    # Handle "et al." cases - extract first author before "et al"
+    # Handle "et al." cases
     if 'et al' in authors_str.lower():
-        # Match first author, stopping before "et al"
-        match = re.match(r'^([^,]+?)(?:\s+et\s+al\.?)', authors_str, re.IGNORECASE)
+        match = re.match(r'^([^,]+?)(?:\s+et\s+al\.?)$', authors_str, re.IGNORECASE)
         if match:
             first_author = match.group(1).strip()
-            if not is_institutional_name(first_author):
-                first_author = format_author_ieee(first_author)
             return f"{first_author} et al."
         return authors_str
 
@@ -131,39 +91,27 @@ def format_authors_ieee(authors_str: str) -> str:
     if not authors:
         return "Research Team"
 
-    # Format each author (skip institutional names)
-    formatted = []
-    for a in authors:
-        if is_institutional_name(a):
-            formatted.append(a)
-        else:
-            formatted.append(format_author_ieee(a))
-
-    if len(formatted) == 1:
-        return formatted[0]
-    elif len(formatted) == 2:
-        return f"{formatted[0]} and {formatted[1]}"
+    if len(authors) == 1:
+        return authors[0]
+    elif len(authors) == 2:
+        return f"{authors[0]} and {authors[1]}"
     else:
-        return ', '.join(formatted[:-1]) + ', and ' + formatted[-1]
+        return ', '.join(authors[:-1]) + ', and ' + authors[-1]
 
 
 def format_citation_ieee_fixed(source: Dict, index: int) -> str:
     """
-    Format citation in IEEE style - CORRECTED VERSION
+    Format citation in IEEE style (User's Custom Format).
 
-    IEEE Reference Format for Online Sources:
-    [N] A. B. Author, "Article title," Journal Name, vol. X, no. Y, pp. ZZ-ZZ, Month Year.
-        [Online]. Available: URL. [Accessed: Month Day, Year].
+    Format: [N] Authors, "Title," Venue, Year.
+            Link: URL
 
-    Simplified for web sources:
-    [N] A. B. Author, "Article title", Publication, Year. [Online]. Available: URL
-
-    Key IEEE rules applied:
-    1. Authors as initials + surname (human names only)
+    Rules:
+    1. Full author names (not initials)
     2. Institutional names preserved as-is
-    3. Comma OUTSIDE closing quotation mark for title
-    4. Journal/venue in italics
-    5. [Online]. Available: format for URLs
+    3. Comma INSIDE closing quotation mark for title
+    4. Venue without italics
+    5. Link on separate line
     """
     meta = source.get('metadata', {})
     authors = meta.get('authors', 'Research Team')
@@ -172,20 +120,19 @@ def format_citation_ieee_fixed(source: Dict, index: int) -> str:
     year = meta.get('year', '2024')
     url = source.get('url', '')
 
-    # Ensure no 'unknown' values - use venue-based institutional attribution
+    # Ensure no 'unknown' values
     if not authors or authors.lower() in ['unknown', 'author unknown']:
         authors = venue + ' Authors'
 
     if not title or title.lower() == 'unknown':
         title = 'Research Article'
 
-    # Format authors to IEEE style (initials + surname)
-    # Note: format_authors_ieee() automatically preserves institutional names
+    # Format authors (preserves full names and institutional names)
     formatted_authors = format_authors_ieee(authors)
 
-    # IEEE format: [N] A. B. Author, "Title", Venue, Year. [Online]. Available: URL
-    # Note: Comma goes OUTSIDE the closing quotation mark in IEEE style
-    citation = f'[{index}] {formatted_authors}, "{title}", <i>{venue}</i>, {year}. [Online]. Available: <a href="{url}" target="_blank">{url}</a>'
+    # Format: [N] Authors, "Title," Venue, Year.
+    # Link: URL
+    citation = f'[{index}] {formatted_authors}, "{title}," {venue}, {year}. \nLink: {url}'
 
     return citation
 
@@ -195,65 +142,60 @@ def format_citation_ieee_fixed(source: Dict, index: int) -> str:
 # ================================================================================
 
 class TestAuthorFormatting(unittest.TestCase):
-    """Test IEEE author name formatting"""
+    """Test author name formatting (full names preserved)"""
 
     def test_single_name(self):
         """Single word names should pass through unchanged"""
-        self.assertEqual(format_author_ieee("Einstein"), "Einstein")
+        self.assertEqual(format_authors_ieee("Einstein"), "Einstein")
 
     def test_two_part_name(self):
-        """First Last -> F. Last"""
-        self.assertEqual(format_author_ieee("John Smith"), "J. Smith")
+        """First Last -> First Last (full name preserved)"""
+        self.assertEqual(format_authors_ieee("John Smith"), "John Smith")
 
     def test_three_part_name(self):
-        """First Middle Last -> F. M. Last"""
-        self.assertEqual(format_author_ieee("John David Smith"), "J. D. Smith")
-
-    def test_already_formatted(self):
-        """Already IEEE format should pass through"""
-        self.assertEqual(format_author_ieee("J. Smith"), "J. Smith")
+        """First Middle Last -> First Middle Last (full name preserved)"""
+        self.assertEqual(format_authors_ieee("John David Smith"), "John David Smith")
 
     def test_empty_name(self):
-        """Empty string should return empty"""
-        self.assertEqual(format_author_ieee(""), "")
+        """Empty string should return default"""
+        self.assertEqual(format_authors_ieee(""), "Research Team")
 
 
 class TestMultipleAuthors(unittest.TestCase):
-    """Test IEEE multiple author formatting"""
+    """Test multiple author formatting (full names)"""
 
     def test_single_author(self):
-        """Single author formatting"""
-        self.assertEqual(format_authors_ieee("John Smith"), "J. Smith")
+        """Single author formatting (full name)"""
+        self.assertEqual(format_authors_ieee("John Smith"), "John Smith")
 
     def test_two_authors(self):
-        """Two authors: 'A and B' format"""
+        """Two authors: 'A and B' format (full names)"""
         result = format_authors_ieee("John Smith, Jane Doe")
-        self.assertEqual(result, "J. Smith and J. Doe")
+        self.assertEqual(result, "John Smith and Jane Doe")
 
     def test_three_authors(self):
-        """Three authors: 'A, B, and C' format"""
+        """Three authors: 'A, B, and C' format (full names)"""
         result = format_authors_ieee("John Smith, Jane Doe, Bob Wilson")
-        self.assertEqual(result, "J. Smith, J. Doe, and B. Wilson")
+        self.assertEqual(result, "John Smith, Jane Doe, and Bob Wilson")
 
     def test_et_al(self):
-        """et al. should be preserved with first author formatted"""
+        """et al. should be preserved with first author as full name"""
         result = format_authors_ieee("John Smith et al.")
-        self.assertEqual(result, "J. Smith et al.")
+        self.assertEqual(result, "John Smith et al.")
 
     def test_empty_authors(self):
         """Empty authors should return default"""
         self.assertEqual(format_authors_ieee(""), "Research Team")
 
     def test_institutional_authors(self):
-        """Institutional names should NOT be formatted to initials"""
-        # Research Team should stay as-is (institutional name)
+        """Institutional names should NOT be modified"""
         self.assertEqual(format_authors_ieee("Research Team"), "Research Team")
         self.assertEqual(format_authors_ieee("IEEE Authors"), "IEEE Authors")
         self.assertEqual(format_authors_ieee("ArXiv Contributors"), "ArXiv Contributors")
 
 
 class TestIEEECitation(unittest.TestCase):
-    """Test full IEEE citation formatting"""
+    """Test full IEEE citation formatting (User's Custom Style)"""
 
     def setUp(self):
         """Sample source data for tests"""
@@ -268,32 +210,36 @@ class TestIEEECitation(unittest.TestCase):
         }
 
     def test_basic_formatting(self):
-        """Test basic IEEE citation format"""
+        """Test basic custom IEEE citation format"""
         result = format_citation_ieee_fixed(self.sample_source, 1)
 
-        # Should start with [1]
         self.assertTrue(result.startswith('[1]'))
-
-        # Should have formatted authors
-        self.assertIn('J. Smith and J. Doe', result)
-
-        # Title should be in quotes with comma OUTSIDE
-        self.assertIn('"A Study on Testing"', result)
-
-        # Should have [Online]. Available:
-        self.assertIn('[Online]. Available:', result)
+        self.assertIn('John Smith and Jane Doe', result)  # Full names
+        self.assertIn('"A Study on Testing,"', result)  # Comma inside quotes
+        self.assertIn('IEEE Transactions on Testing,', result)  # No italics
+        self.assertNotIn('[Online]. Available:', result)  # No online link format
+        self.assertIn('Link:', result)  # Simple Link format
 
     def test_comma_placement(self):
-        """IEEE requires comma OUTSIDE closing quotation mark"""
+        """Custom IEEE requires comma INSIDE closing quotation mark for title"""
         result = format_citation_ieee_fixed(self.sample_source, 1)
+        self.assertIn('Testing,"', result)  # Comma inside quote
+        self.assertNotIn('Testing",', result)  # This would be wrong
 
-        # Correct: "Title",
-        # Incorrect: "Title,"
-        self.assertIn('Testing",', result)  # Comma outside quote
-        self.assertNotIn('Testing,"', result)  # This would be wrong
+    def test_no_italics(self):
+        """Venue should NOT be italicized"""
+        result = format_citation_ieee_fixed(self.sample_source, 1)
+        self.assertNotIn('<i>', result)
+        self.assertNotIn('</i>', result)
+
+    def test_link_format(self):
+        """URL should use 'Link:' format, not '[Online]. Available:'"""
+        result = format_citation_ieee_fixed(self.sample_source, 1)
+        self.assertIn('Link: https://example.com/paper', result)
+        self.assertNotIn('[Online]. Available:', result)
 
     def test_unknown_author_handling(self):
-        """Unknown authors should get venue-based attribution (not formatted)"""
+        """Unknown authors should get venue-based attribution"""
         source = {
             'url': 'https://example.com',
             'metadata': {
@@ -304,18 +250,15 @@ class TestIEEECitation(unittest.TestCase):
             }
         }
         result = format_citation_ieee_fixed(source, 1)
-        # IEEE Authors is institutional, should not be converted to initials
         self.assertIn('IEEE Authors', result)
         self.assertNotIn('unknown', result.lower())
 
     def test_missing_metadata(self):
-        """Missing metadata should use defaults (institutional names preserved)"""
+        """Missing metadata should use defaults"""
         source = {'url': 'https://example.com', 'metadata': {}}
         result = format_citation_ieee_fixed(source, 1)
 
-        # Should not crash and should have defaults
         self.assertTrue(result.startswith('[1]'))
-        # "Research Team" is institutional and should be preserved
         self.assertIn('Research Team', result)
 
     def test_index_numbering(self):
@@ -346,18 +289,20 @@ class TestCompareOriginalVsFixed(unittest.TestCase):
         print("\n" + "="*80)
         print("COMPARISON: Original vs Fixed IEEE Citation")
         print("="*80)
-        print(f"\nORIGINAL:\n{original}")
-        print(f"\nFIXED:\n{fixed}")
+        print(f"\nORIGINAL (Standard IEEE with italics):\n{original}")
+        print(f"\nFIXED (User's Custom Style):\n{fixed}")
         print("\nKEY DIFFERENCES:")
-        print("1. Authors converted to initials (A. Einstein -> A. Einstein is same,")
-        print("   but 'Albert Einstein, Richard Feynman' -> 'A. Einstein, R. Feynman, and S. Hawking')")
-        print("2. Comma placement: Original has comma inside quotes, Fixed has it outside")
+        print("1. Full author names with 'and' before last author")
+        print("2. Comma INSIDE title quotes")
+        print("3. No italics for venue")
+        print("4. 'Link:' format instead of '[Online]. Available:'")
         print("="*80)
 
-        # Actual assertions
-        self.assertIn('A. Einstein', fixed)
-        self.assertIn('R. Feynman', fixed)
-        self.assertIn(', and S. Hawking', fixed)
+        # Assertions
+        self.assertIn('Albert Einstein, Richard Feynman, and Stephen Hawking', fixed)
+        self.assertIn('"A Grand Unified Theory of Everything,"', fixed)
+        self.assertNotIn('<i>', fixed)
+        self.assertIn('Link:', fixed)
 
 
 class TestRealWorldExamples(unittest.TestCase):
@@ -376,11 +321,11 @@ class TestRealWorldExamples(unittest.TestCase):
         }
         result = format_citation_ieee_fixed(source, 1)
         self.assertIn('[1]', result)
-        # ArXiv Contributors is institutional - should NOT be formatted to initials
         self.assertIn('ArXiv Contributors', result)
+        self.assertIn('"Attention Is All You Need," arXiv preprint, 2023.', result)
 
     def test_ieee_source(self):
-        """Test IEEE.org source"""
+        """Test IEEE.org source (full names)"""
         source = {
             'url': 'https://ieeexplore.ieee.org/document/123456',
             'metadata': {
@@ -392,8 +337,23 @@ class TestRealWorldExamples(unittest.TestCase):
         }
         result = format_citation_ieee_fixed(source, 3)
         self.assertIn('[3]', result)
-        self.assertIn('W. Zhang and L. Chen', result)
-        self.assertIn('[Online]. Available:', result)
+        self.assertIn('Wei Zhang and Li Chen', result)
+        self.assertIn('"Deep Learning for Signal Processing," IEEE Signal Processing Magazine, 2024.', result)
+
+    def test_plos_source(self):
+        """Test PLOS ONE style source"""
+        source = {
+            'url': 'https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0298861',
+            'metadata': {
+                'authors': 'Shengnan Wu',
+                'title': 'Application of multimedia technology to innovative vocational education',
+                'venue': 'PLOS ONE',
+                'year': '2024'
+            }
+        }
+        result = format_citation_ieee_fixed(source, 2)
+        self.assertIn('[2] Shengnan Wu, "Application of multimedia technology to innovative vocational education," PLOS ONE, 2024.', result)
+        self.assertIn('Link:', result)
 
 
 # ================================================================================

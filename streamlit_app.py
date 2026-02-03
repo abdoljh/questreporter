@@ -580,7 +580,7 @@ def batch_extract_metadata(sources: List[Dict]) -> List[Dict]:
 # CITATION FORMATTING
 # ================================================================================
 
-# Institutional/organizational names that should NOT be converted to initials
+# Institutional/organizational names that should NOT be modified
 INSTITUTIONAL_NAMES = {
     'research team', 'authors', 'contributors', 'editors', 'staff',
     'ieee authors', 'acm authors', 'arxiv contributors', 'nature authors',
@@ -590,7 +590,7 @@ INSTITUTIONAL_NAMES = {
 
 
 def is_institutional_name(name: str) -> bool:
-    """Check if name is an institutional/organizational name that shouldn't be formatted"""
+    """Check if name is an institutional/organizational name"""
     name_lower = name.lower().strip()
     if name_lower in INSTITUTIONAL_NAMES:
         return True
@@ -600,39 +600,15 @@ def is_institutional_name(name: str) -> bool:
     return False
 
 
-def format_author_ieee(name: str) -> str:
-    """
-    Convert author name to IEEE format: "A. B. Lastname"
-
-    Examples:
-        "John Smith" -> "J. Smith"
-        "John David Smith" -> "J. D. Smith"
-    """
-    name = name.strip()
-    if not name:
-        return name
-
-    # Already in initial format
-    if re.match(r'^[A-Z]\.\s', name):
-        return name
-
-    parts = name.split()
-    if len(parts) == 1:
-        return parts[0]
-
-    surname = parts[-1]
-    initials = [p[0].upper() + '.' for p in parts[:-1] if p]
-    return ' '.join(initials) + ' ' + surname
-
-
 def format_authors_ieee(authors_str: str) -> str:
     """
-    Format multiple authors for IEEE style.
+    Format multiple authors for IEEE style (full names preserved).
 
-    IEEE format:
-    - Two authors: "A. B. Lastname and C. D. Lastname"
-    - Three+ authors: "A. B. Lastname, C. D. Lastname, and E. F. Lastname"
+    Format:
+    - Two authors: "Author One and Author Two"
+    - Three+ authors: "Author One, Author Two, and Author Three"
     - Institutional names preserved as-is
+    - "et al." preserved
     """
     if not authors_str:
         return "Research Team"
@@ -642,46 +618,40 @@ def format_authors_ieee(authors_str: str) -> str:
 
     # Handle "et al." cases
     if 'et al' in authors_str.lower():
-        match = re.match(r'^([^,]+?)(?:\s+et\s+al\.?)', authors_str, re.IGNORECASE)
+        match = re.match(r'^([^,]+?)(?:\s+et\s+al\.?)$', authors_str, re.IGNORECASE)
         if match:
             first_author = match.group(1).strip()
-            if not is_institutional_name(first_author):
-                first_author = format_author_ieee(first_author)
             return f"{first_author} et al."
         return authors_str
 
+    # Split by comma or "and"
     authors = re.split(r',\s*|\s+and\s+', authors_str)
     authors = [a.strip() for a in authors if a.strip()]
 
     if not authors:
         return "Research Team"
 
-    formatted = []
-    for a in authors:
-        if is_institutional_name(a):
-            formatted.append(a)
-        else:
-            formatted.append(format_author_ieee(a))
-
-    if len(formatted) == 1:
-        return formatted[0]
-    elif len(formatted) == 2:
-        return f"{formatted[0]} and {formatted[1]}"
+    if len(authors) == 1:
+        return authors[0]
+    elif len(authors) == 2:
+        return f"{authors[0]} and {authors[1]}"
     else:
-        return ', '.join(formatted[:-1]) + ', and ' + formatted[-1]
+        return ', '.join(authors[:-1]) + ', and ' + authors[-1]
 
 
 def format_citation_ieee(source: Dict, index: int) -> str:
     """
-    Format citation in IEEE style with clickable URL
-    GUARANTEED to never show 'Author Unknown'
+    Format citation in IEEE style.
 
-    IEEE format rules applied:
-    1. Authors as initials + surname (human names only)
+    Format: [N] Authors, "Title," Venue, Year.
+            Link: URL
+
+    Rules:
+    1. Full author names (not initials)
     2. Institutional names preserved as-is
-    3. Comma OUTSIDE closing quotation mark for title
-    4. Journal/venue in italics
-    5. [Online]. Available: format for URLs
+    3. Comma INSIDE closing quotation mark for title
+    4. Venue without italics
+    5. Link on separate line
 
     Args:
         source: Source dict with metadata
@@ -704,12 +674,13 @@ def format_citation_ieee(source: Dict, index: int) -> str:
     if not title or title.lower() == 'unknown':
         title = 'Research Article'
 
-    # Format authors to IEEE style (initials + surname, preserves institutional names)
+    # Format authors (preserves full names and institutional names)
     formatted_authors = format_authors_ieee(authors)
 
-    # IEEE format: [N] A. B. Author, "Title", Venue, Year. [Online]. Available: URL
-    # Note: Comma goes OUTSIDE the closing quotation mark in IEEE style
-    citation = f'[{index}] {formatted_authors}, "{title}", <i>{venue}</i>, {year}. [Online]. Available: <a href="{url}" target="_blank">{url}</a>'
+    # IEEE format: [N] Authors, "Title," Venue, Year.
+    # Link: URL
+    # Note: Comma goes INSIDE the closing quotation mark, no italics, Link on new line
+    citation = f'[{index}] {formatted_authors}, "{title}," {venue}, {year}. \nLink: {url}'
 
     return citation
 
