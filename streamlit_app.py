@@ -23,6 +23,38 @@ import re
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 import io
+import xml.etree.ElementTree as ET
+
+# Import academic API utilities (for real metadata extraction)
+try:
+    from arxiv_utils import fetch_and_process_arxiv
+    ARXIV_AVAILABLE = True
+except ImportError:
+    ARXIV_AVAILABLE = False
+
+try:
+    from plos_utils import fetch_and_process_plos
+    PLOS_AVAILABLE = True
+except ImportError:
+    PLOS_AVAILABLE = False
+
+try:
+    from doi_utils import fetch_and_process_doi
+    DOI_AVAILABLE = True
+except ImportError:
+    DOI_AVAILABLE = False
+
+try:
+    from s2_utils import fetch_and_process_s2
+    S2_AVAILABLE = True
+except ImportError:
+    S2_AVAILABLE = False
+
+try:
+    from openalex_utils import fetch_and_process_openalex
+    OPENALEX_AVAILABLE = True
+except ImportError:
+    OPENALEX_AVAILABLE = False
 
 # Try to import pdfplumber, but don't fail if not available
 try:
@@ -343,6 +375,286 @@ def call_anthropic_api(
 
 
 # ================================================================================
+# ACADEMIC API METADATA EXTRACTION (FREE - NO LLM CALLS)
+# ================================================================================
+
+def fetch_arxiv_metadata_by_id(arxiv_id: str) -> Dict:
+    """
+    Fetch metadata for a specific arXiv paper using the arXiv API.
+    This is FREE and returns real author names and titles.
+
+    Args:
+        arxiv_id: arXiv ID (e.g., "2510.03989")
+
+    Returns:
+        Dict with ieee_authors, title, venue, year, url
+    """
+    try:
+        # arXiv API endpoint
+        api_url = f"http://export.arxiv.org/api/query?id_list={arxiv_id}"
+        response = requests.get(api_url, timeout=15)
+
+        if response.status_code != 200:
+            return None
+
+        # Parse XML response
+        root = ET.fromstring(response.content)
+        ns = {'atom': 'http://www.w3.org/2005/Atom'}
+
+        entry = root.find('atom:entry', ns)
+        if entry is None:
+            return None
+
+        # Extract title
+        title_elem = entry.find('atom:title', ns)
+        title = title_elem.text.strip().replace('\n', ' ') if title_elem is not None else f"arXiv:{arxiv_id}"
+
+        # Extract authors
+        authors = []
+        for author in entry.findall('atom:author', ns):
+            name_elem = author.find('atom:name', ns)
+            if name_elem is not None:
+                authors.append(name_elem.text.strip())
+
+        # Format authors in IEEE style
+        if authors:
+            formatted_authors = []
+            for auth in authors:
+                parts = auth.split()
+                if len(parts) > 1:
+                    formatted_authors.append(f"{parts[0][0]}. {' '.join(parts[1:])}")
+                else:
+                    formatted_authors.append(auth)
+
+            if len(formatted_authors) >= 3:
+                ieee_authors = f"{formatted_authors[0]} et al."
+            elif len(formatted_authors) == 2:
+                ieee_authors = f"{formatted_authors[0]} and {formatted_authors[1]}"
+            else:
+                ieee_authors = formatted_authors[0]
+        else:
+            ieee_authors = "arXiv Authors"
+
+        # Extract year from published date
+        published = entry.find('atom:published', ns)
+        year = published.text[:4] if published is not None else "2024"
+
+        return {
+            'ieee_authors': ieee_authors,
+            'title': title,
+            'venue': f"arXiv preprint arXiv:{arxiv_id}",
+            'year': year,
+            'url': f"https://arxiv.org/abs/{arxiv_id}"
+        }
+
+    except Exception as e:
+        print(f"[Debug] arXiv API error for {arxiv_id}: {e}")
+        return None
+
+
+def fetch_crossref_metadata_by_doi(doi: str) -> Dict:
+    """
+    Fetch metadata for a specific DOI using CrossRef API.
+    Works for IEEE, ACM, Nature, Science, Springer, Wiley, etc.
+
+    Args:
+        doi: DOI string (e.g., "10.1145/3744746")
+
+    Returns:
+        Dict with ieee_authors, title, venue, year, url
+    """
+    try:
+        api_url = f"https://api.crossref.org/works/{doi}"
+        headers = {'User-Agent': 'AcademicReportWriter/1.0 (mailto:research@example.com)'}
+        response = requests.get(api_url, headers=headers, timeout=15)
+
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+        item = data.get('message', {})
+
+        # Extract authors
+        authors_data = item.get('author', [])
+        if authors_data:
+            formatted_authors = []
+            for auth in authors_data:
+                family = auth.get('family', '')
+                given = auth.get('given', '')
+                if family and given:
+                    formatted_authors.append(f"{given[0]}. {family}")
+                elif family:
+                    formatted_authors.append(family)
+
+            if len(formatted_authors) >= 3:
+                ieee_authors = f"{formatted_authors[0]} et al."
+            elif len(formatted_authors) == 2:
+                ieee_authors = f"{formatted_authors[0]} and {formatted_authors[1]}"
+            elif formatted_authors:
+                ieee_authors = formatted_authors[0]
+            else:
+                ieee_authors = "Unknown Authors"
+        else:
+            ieee_authors = "Unknown Authors"
+
+        # Extract title
+        title_list = item.get('title', [])
+        title = title_list[0] if title_list else "Unknown Title"
+
+        # Extract venue
+        venue_list = item.get('container-title', [])
+        venue = venue_list[0] if venue_list else "Academic Publication"
+
+        # Extract year
+        year = "n.d."
+        pub_date = item.get('published-print') or item.get('published-online') or item.get('created')
+        if pub_date and 'date-parts' in pub_date and pub_date['date-parts']:
+            year = str(pub_date['date-parts'][0][0])
+
+        return {
+            'ieee_authors': ieee_authors,
+            'title': title,
+            'venue': venue,
+            'year': year,
+            'url': f"https://doi.org/{doi}"
+        }
+
+    except Exception as e:
+        print(f"[Debug] CrossRef API error for {doi}: {e}")
+        return None
+
+
+def fetch_plos_metadata_by_doi(plos_doi: str) -> Dict:
+    """
+    Fetch metadata for a specific PLOS paper using their API.
+
+    Args:
+        plos_doi: PLOS DOI (e.g., "10.1371/journal.pone.0298861")
+
+    Returns:
+        Dict with ieee_authors, title, venue, year, url
+    """
+    try:
+        base_url = "http://api.plos.org/search"
+        params = {
+            "q": f'id:"{plos_doi}"',
+            "fl": "author_display,title,journal,publication_date,id",
+            "wt": "json",
+            "rows": 1
+        }
+
+        response = requests.get(base_url, params=params, timeout=15)
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+        docs = data.get('response', {}).get('docs', [])
+
+        if not docs:
+            return None
+
+        entry = docs[0]
+
+        # Format authors
+        author_list = entry.get('author_display', [])
+        if author_list:
+            formatted = []
+            for auth in author_list:
+                parts = auth.split(',')
+                if len(parts) > 1:
+                    surname = parts[0].strip()
+                    first_name = parts[1].strip()
+                    initial = first_name[0] if first_name else ""
+                    formatted.append(f"{initial}. {surname}")
+                else:
+                    formatted.append(auth)
+
+            if len(formatted) >= 3:
+                ieee_authors = f"{formatted[0]} et al."
+            elif len(formatted) == 2:
+                ieee_authors = f"{formatted[0]} and {formatted[1]}"
+            else:
+                ieee_authors = formatted[0] if formatted else "Unknown Author"
+        else:
+            ieee_authors = "Unknown Author"
+
+        # Extract year
+        pub_date = entry.get('publication_date', '')
+        year = pub_date.split('-')[0] if pub_date else 'n.d.'
+
+        return {
+            'ieee_authors': ieee_authors,
+            'title': entry.get('title', 'Unknown Title'),
+            'venue': entry.get('journal', 'PLOS ONE'),
+            'year': year,
+            'url': f"https://journals.plos.org/plosone/article?id={plos_doi}"
+        }
+
+    except Exception as e:
+        print(f"[Debug] PLOS API error for {plos_doi}: {e}")
+        return None
+
+
+def fetch_metadata_from_academic_api(url: str) -> Dict:
+    """
+    Master function: Routes to the appropriate academic API based on URL.
+    Returns real metadata (authors, title) without using expensive LLM calls.
+
+    Args:
+        url: Source URL
+
+    Returns:
+        Dict with ieee_authors, title, venue, year, url or None if API fails
+    """
+    domain = urlparse(url).netloc.lower()
+
+    # 1. arXiv papers
+    if 'arxiv.org' in domain:
+        arxiv_match = re.search(r'(\d{4}\.\d{4,5})', url)
+        if arxiv_match:
+            return fetch_arxiv_metadata_by_id(arxiv_match.group(1))
+
+    # 2. PLOS papers
+    if 'plos.org' in domain:
+        doi_match = re.search(r'(10\.1371/journal\.[a-z]+\.\d+)', url)
+        if doi_match:
+            return fetch_plos_metadata_by_doi(doi_match.group(1))
+
+    # 3. DOI-based papers (IEEE, ACM, Nature, Science, Springer, Wiley, etc.)
+    # Extract DOI from URL
+    doi_patterns = [
+        r'doi\.org/(10\.\d{4,}/[^\s&?#]+)',
+        r'doi/(10\.\d{4,}/[^\s&?#]+)',
+        r'(10\.\d{4,}/[^\s&?#]+)'
+    ]
+
+    for pattern in doi_patterns:
+        doi_match = re.search(pattern, url)
+        if doi_match:
+            doi = doi_match.group(1).rstrip('/')
+            result = fetch_crossref_metadata_by_doi(doi)
+            if result:
+                result['url'] = url  # Keep original URL
+                return result
+
+    # 4. IEEE Xplore - extract document ID and try CrossRef
+    if 'ieee' in domain:
+        doc_match = re.search(r'document/(\d+)', url)
+        if doc_match:
+            # IEEE documents often have DOIs like 10.1109/XXX.YYYY.ZZZZZZZ
+            # Try Semantic Scholar or OpenAlex as fallback
+            pass
+
+    # 5. ACM Digital Library
+    if 'acm.org' in domain:
+        doi_match = re.search(r'doi/(10\.\d+/[\d.]+)', url)
+        if doi_match:
+            return fetch_crossref_metadata_by_doi(doi_match.group(1))
+
+    return None
+
+
+# ================================================================================
 # CITATION MODULE - METADATA EXTRACTION (NO "AUTHOR UNKNOWN")
 # ================================================================================
 
@@ -538,41 +850,67 @@ Return ONLY JSON:
 
 def batch_extract_metadata(sources: List[Dict]) -> List[Dict]:
     """
-    CRITICAL FIX: Fetches full content for each source before LLM extraction.
+    Extract real metadata using FREE academic APIs first (arXiv, CrossRef, PLOS).
+    Falls back to LLM extraction only when academic APIs fail.
+
+    This approach:
+    - Uses FREE academic APIs (no LLM cost for metadata)
+    - Gets REAL author names and titles (not placeholders)
+    - Falls back to LLM only for sources without API coverage
     """
     if not sources:
         return sources
-    
-    update_progress('Metadata Extraction', 'Fetching full content and real authors...', 62)
-    
+
+    update_progress('Metadata Extraction', 'Fetching real metadata from academic APIs...', 62)
+
+    api_success_count = 0
+    llm_fallback_count = 0
+
     # Process sources (limit to 12 for speed/cost)
     for i, source in enumerate(sources[:12]):
         progress = 62 + (i / 12) * 8
         update_progress('Metadata Extraction', f'Analyzing source {i+1}/12...', int(progress))
-        
+
         try:
-            # 1. Fetch real content (PDF text or HTML)
-            full_content = web_fetch_content(source['url'])
-            
-            # 2. Update the source with real content
+            url = source.get('url', '')
+
+            # STEP 1: Try FREE academic APIs first (arXiv, CrossRef, PLOS)
+            api_metadata = fetch_metadata_from_academic_api(url)
+
+            if api_metadata:
+                # SUCCESS: Got real metadata from academic API (FREE)
+                source['metadata'] = {
+                    'authors': api_metadata.get('ieee_authors', 'Unknown Author'),
+                    'title': api_metadata.get('title', 'Unknown Title'),
+                    'venue': api_metadata.get('venue', 'Academic Publication'),
+                    'year': api_metadata.get('year', '2024')
+                }
+                source['title'] = api_metadata.get('title', source.get('title', 'Unknown Title'))
+                api_success_count += 1
+                continue  # Skip expensive LLM call
+
+            # STEP 2: Fallback to web scraping + LLM (only if API failed)
+            full_content = web_fetch_content(url)
+
             if full_content and "Failed" not in full_content:
                 source['content'] = full_content
-            
-            # 3. Call the API with the FULL content, not just a snippet
-            # Pass the context directly to ensure it has the header of the paper
-            enhanced = enhance_metadata_with_api(
-                source['metadata'],
-                source['url'],
-                source['content']
-            )
-            
-            # Update source with the new, verified data
-            source['metadata'] = enhanced
-            source['title'] = enhanced.get('title', source['title'])
-            
-        except Exception:
+
+                # Only use LLM if we have content to analyze
+                enhanced = enhance_metadata_with_api(
+                    source['metadata'],
+                    url,
+                    source['content']
+                )
+
+                source['metadata'] = enhanced
+                source['title'] = enhanced.get('title', source.get('title', 'Unknown Title'))
+                llm_fallback_count += 1
+
+        except Exception as e:
+            print(f"[Debug] Metadata extraction failed for {source.get('url', 'unknown')}: {e}")
             continue
-            
+
+    print(f"[System] Metadata extraction: {api_success_count} via FREE APIs, {llm_fallback_count} via LLM fallback")
     return sources
 
 
