@@ -72,9 +72,9 @@ except ImportError:
 MODEL_PRIMARY = "claude-sonnet-4-20250514"
 MODEL_FALLBACK = "claude-haiku-3-5-20241022"
 
-# Rate limiting (optimized for speed)
-MIN_API_DELAY = 2.0  # Reduced from 5.0 to 2.0 seconds (minimum safe delay)
-RETRY_DELAYS = [5, 10, 15]  # Reduced from [10, 20, 30]
+# Rate limiting (minimized - only for Anthropic API, not academic APIs)
+MIN_API_DELAY = 0.5  # Minimal delay for Anthropic API calls only
+RETRY_DELAYS = [2, 4, 8]  # Faster retries
 
 # Trusted domains for academic sources
 TRUSTED_DOMAINS = {
@@ -850,31 +850,31 @@ Return ONLY JSON:
 
 def batch_extract_metadata(sources: List[Dict]) -> List[Dict]:
     """
-    Extract real metadata using FREE academic APIs first (arXiv, CrossRef, PLOS).
-    Falls back to LLM extraction only when academic APIs fail.
+    Extract real metadata using FREE academic APIs (arXiv, CrossRef, PLOS).
+    NO LLM fallback - uses URL-pattern extraction for unsupported sources.
 
     This approach:
-    - Uses FREE academic APIs (no LLM cost for metadata)
-    - Gets REAL author names and titles (not placeholders)
-    - Falls back to LLM only for sources without API coverage
+    - Uses FREE academic APIs (no LLM cost)
+    - Gets REAL author names and titles
+    - Falls back to URL-pattern metadata (no LLM)
     """
     if not sources:
         return sources
 
-    update_progress('Metadata Extraction', 'Fetching real metadata from academic APIs...', 62)
+    update_progress('Metadata Extraction', 'Fetching metadata from academic APIs...', 62)
 
     api_success_count = 0
-    llm_fallback_count = 0
+    pattern_fallback_count = 0
 
-    # Process sources (limit to 12 for speed/cost)
-    for i, source in enumerate(sources[:12]):
-        progress = 62 + (i / 12) * 8
-        update_progress('Metadata Extraction', f'Analyzing source {i+1}/12...', int(progress))
+    # Process ALL sources (no limit since we're not using LLM)
+    for i, source in enumerate(sources):
+        progress = 62 + (i / len(sources)) * 8
+        update_progress('Metadata Extraction', f'Analyzing source {i+1}/{len(sources)}...', int(progress))
 
         try:
             url = source.get('url', '')
 
-            # STEP 1: Try FREE academic APIs first (arXiv, CrossRef, PLOS)
+            # Try FREE academic APIs (arXiv, CrossRef, PLOS)
             api_metadata = fetch_metadata_from_academic_api(url)
 
             if api_metadata:
@@ -887,30 +887,16 @@ def batch_extract_metadata(sources: List[Dict]) -> List[Dict]:
                 }
                 source['title'] = api_metadata.get('title', source.get('title', 'Unknown Title'))
                 api_success_count += 1
-                continue  # Skip expensive LLM call
-
-            # STEP 2: Fallback to web scraping + LLM (only if API failed)
-            full_content = web_fetch_content(url)
-
-            if full_content and "Failed" not in full_content:
-                source['content'] = full_content
-
-                # Only use LLM if we have content to analyze
-                enhanced = enhance_metadata_with_api(
-                    source['metadata'],
-                    url,
-                    source['content']
-                )
-
-                source['metadata'] = enhanced
-                source['title'] = enhanced.get('title', source.get('title', 'Unknown Title'))
-                llm_fallback_count += 1
+            else:
+                # Fallback: Keep URL-pattern metadata (NO LLM call)
+                pattern_fallback_count += 1
 
         except Exception as e:
             print(f"[Debug] Metadata extraction failed for {source.get('url', 'unknown')}: {e}")
+            pattern_fallback_count += 1
             continue
 
-    print(f"[System] Metadata extraction: {api_success_count} via FREE APIs, {llm_fallback_count} via LLM fallback")
+    print(f"[System] Metadata: {api_success_count} via APIs, {pattern_fallback_count} via URL-patterns (no LLM)")
     return sources
 
 
@@ -1280,7 +1266,7 @@ Use the variations listed above instead!"""
 
 REQUIREMENTS:
 - Use ONLY provided sources below
-- Cite as [Source N] throughout
+- Cite as [N] throughout (number only, no word "Source")
 - Include specific data, statistics, and years from sources
 - VARY your phrasing - avoid repeating "{topic}" excessively
 
@@ -1352,7 +1338,7 @@ def critique_draft_simple(draft: Dict, sources: List[Dict]) -> Dict:
     update_progress('Review', 'Quality check...', 85)
     
     draft_text = json.dumps(draft).lower()
-    citation_count = draft_text.count('[source')
+    citation_count = len(re.findall(r'\[\d+\]', draft_text))
     
     return {
         'topicRelevance': 80,
