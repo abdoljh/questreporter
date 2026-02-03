@@ -580,35 +580,132 @@ def batch_extract_metadata(sources: List[Dict]) -> List[Dict]:
 # CITATION FORMATTING
 # ================================================================================
 
-def format_citation_ieee(source: Dict, index: int) -> str:
+# Institutional/organizational names that should NOT be converted to initials
+INSTITUTIONAL_NAMES = {
+    'research team', 'authors', 'contributors', 'editors', 'staff',
+    'ieee authors', 'acm authors', 'arxiv contributors', 'nature authors',
+    'academic publication authors', 'university', 'institute', 'laboratory',
+    'organization', 'consortium', 'group', 'committee', 'department'
+}
+
+
+def is_institutional_name(name: str) -> bool:
+    """Check if name is an institutional/organizational name that shouldn't be formatted"""
+    name_lower = name.lower().strip()
+    if name_lower in INSTITUTIONAL_NAMES:
+        return True
+    for suffix in ['authors', 'contributors', 'team', 'staff', 'editors', 'group']:
+        if name_lower.endswith(suffix):
+            return True
+    return False
+
+
+def format_author_ieee(name: str) -> str:
     """
-    Format citation in IEEE style with clickable URL
-    GUARANTEED to never show 'Author Unknown'
-    
-    Args:
-        source: Source dict with metadata
-        index: Citation number
-    
-    Returns:
-        Formatted IEEE citation string
+    Convert author name to IEEE format: "A. B. Lastname"
+
+    Examples:
+        "John Smith" -> "J. Smith"
+        "John David Smith" -> "J. D. Smith"
+    """
+    name = name.strip()
+    if not name:
+        return name
+
+    # Already in initial format
+    if re.match(r'^[A-Z]\.\s', name):
+        return name
+
+    parts = name.split()
+    if len(parts) == 1:
+        return parts[0]
+
+    surname = parts[-1]
+    initials = [p[0].upper() + '.' for p in parts[:-1] if p]
+    return ' '.join(initials) + ' ' + surname
+
+
+def format_authors_ieee(authors_str: str) -> str:
+    """
+    Format multiple authors for IEEE style.
+
+    IEEE format:
+    - Two authors: "A. B. Lastname and C. D. Lastname"
+    - Three+ authors: "A. B. Lastname, C. D. Lastname, and E. F. Lastname"
+    - Institutional names preserved as-is
+    """
+    if not authors_str:
+        return "Research Team"
+
+    if is_institutional_name(authors_str):
+        return authors_str
+
+    # Handle "et al." cases
+    if 'et al' in authors_str.lower():
+        match = re.match(r'^([^,]+?)(?:\s+et\s+al\.?)', authors_str, re.IGNORECASE)
+        if match:
+            first_author = match.group(1).strip()
+            if not is_institutional_name(first_author):
+                first_author = format_author_ieee(first_author)
+            return f"{first_author} et al."
+        return authors_str
+
+    authors = re.split(r',\s*|\s+and\s+', authors_str)
+    authors = [a.strip() for a in authors if a.strip()]
+
+    if not authors:
+        return "Research Team"
+
+    formatted = []
+    for a in authors:
+        if is_institutional_name(a):
+            formatted.append(a)
+        else:
+            formatted.append(format_author_ieee(a))
+
+    if len(formatted) == 1:
+        return formatted[0]
+    elif len(formatted) == 2:
+        return f"{formatted[0]} and {formatted[1]}"
+    else:
+        return ', '.join(formatted[:-1]) + ', and ' + formatted[-1]
+
+
+def format_citation_ieee_fixed(source: Dict, index: int) -> str:
+    """
+    Format citation in user's custom IEEE style - ADAPTED VERSION
+
+    This version matches the format produced by plos_utils.py's output:
+    [N] A. B. Author, "Article title," Journal Name, Year.
+    (No italics for venue, comma inside title quotes, no online link).
+
+    Key rules applied:
+    1. Authors as full names (human names only, 'et al.' preserved).
+    2. Institutional names preserved as-is.
+    3. Comma INSIDE closing quotation mark for title (e.g., "Title,").
+    4. Journal/venue NOT italicized.
+    5. No '[Online]. Available: URL' included in the main citation string.
     """
     meta = source.get('metadata', {})
     authors = meta.get('authors', 'Research Team')
     title = meta.get('title', 'Research Article')
     venue = meta.get('venue', 'Academic Publication')
     year = meta.get('year', '2024')
-    url = source.get('url', '')
-    
-    # Ensure no 'unknown' values
+    url = source.get('url', '') # URL is not included in this custom format
+
+    # Ensure no 'unknown' values - use venue-based institutional attribution
     if not authors or authors.lower() in ['unknown', 'author unknown']:
         authors = venue + ' Authors'
-    
+
     if not title or title.lower() == 'unknown':
         title = 'Research Article'
-    
-    # IEEE format: [N] Authors, "Title," Venue, Year. [Online]. Available: URL
-    citation = f'[{index}] {authors}, "{title}," <i>{venue}</i>, {year}. [Online]. Available: <a href="{url}" target="_blank">{url}</a>'
-    
+
+    # Format authors using the adapted IEEE style (full names)
+    formatted_authors = format_authors_ieee(authors)
+
+    # Custom format: [N] Authors, "Title," Venue, Year.
+    citation = f'[{index}] {formatted_authors}, "{title}," {venue}, {year}. \nLink: {url}'
+
     return citation
 
 
