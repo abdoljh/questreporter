@@ -671,7 +671,7 @@ def format_authors_ieee(authors_str: str) -> str:
         return ', '.join(formatted[:-1]) + ', and ' + formatted[-1]
 
 
-def format_citation_ieee_fixed(source: Dict, index: int) -> str:
+def format_citation_ieee(source: Dict, index: int) -> str:
     """
     Format citation in user's custom IEEE style - ADAPTED VERSION
 
