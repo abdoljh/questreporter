@@ -79,9 +79,9 @@ except ImportError:
 MODEL_PRIMARY = "claude-sonnet-4-20250514"
 MODEL_FALLBACK = "claude-haiku-3-5-20241022"
 
-# Rate limiting for Anthropic API (for report generation only)
-MIN_API_DELAY = 2.0
-RETRY_DELAYS = [5, 10, 20]
+# Rate limiting for Anthropic API (more conservative)
+MIN_API_DELAY = 3.0  # Increased from 2.0
+RETRY_DELAYS = [10, 20, 40]  # More conservative retry delays
 
 # ================================================================================
 # STREAMLIT UI SETUP
@@ -305,8 +305,8 @@ def rate_limit_wait():
     st.session_state.api_call_count += 1
 
 
-def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000) -> Dict:
-    """Call Anthropic API for report generation"""
+def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000, use_fallback: bool = False) -> Dict:
+    """Call Anthropic API for report generation with fallback model support"""
     if not API_AVAILABLE:
         raise Exception("Anthropic API key not configured")
 
@@ -318,8 +318,10 @@ def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000) -> Dict:
         "anthropic-version": "2023-06-01"
     }
 
+    model = MODEL_FALLBACK if use_fallback else MODEL_PRIMARY
+
     data = {
-        "model": MODEL_PRIMARY,
+        "model": model,
         "max_tokens": max_tokens,
         "messages": messages
     }
@@ -330,7 +332,7 @@ def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000) -> Dict:
                 "https://api.anthropic.com/v1/messages",
                 headers=headers,
                 json=data,
-                timeout=120
+                timeout=180  # Increased from 120
             )
 
             if response.status_code == 429:
@@ -339,15 +341,31 @@ def call_anthropic_api(messages: List[Dict], max_tokens: int = 1000) -> Dict:
                 time.sleep(wait_time)
                 continue
 
+            if response.status_code == 529:  # Overloaded
+                wait_time = RETRY_DELAYS[attempt]
+                st.warning(f"⏳ API overloaded. Waiting {wait_time}s (attempt {attempt+1}/3)")
+                time.sleep(wait_time)
+                continue
+
             response.raise_for_status()
             return response.json()
 
         except requests.exceptions.RequestException as e:
+            st.warning(f"⚠️ API error (attempt {attempt+1}/3): {str(e)[:50]}")
             if attempt == 2:
+                # Try fallback model before giving up
+                if not use_fallback:
+                    st.info("🔄 Trying fallback model...")
+                    return call_anthropic_api(messages, max_tokens, use_fallback=True)
                 raise
             time.sleep(RETRY_DELAYS[attempt])
 
-    raise Exception("API call failed after 3 retries")
+    # Try fallback model before giving up
+    if not use_fallback:
+        st.info("🔄 Primary model failed. Trying fallback model...")
+        return call_anthropic_api(messages, max_tokens, use_fallback=True)
+
+    raise Exception("API call failed after 3 retries with both models")
 
 
 # ================================================================================
