@@ -72,9 +72,9 @@ except ImportError:
 MODEL_PRIMARY = "claude-sonnet-4-20250514"
 MODEL_FALLBACK = "claude-haiku-3-5-20241022"
 
-# Rate limiting (minimized - only for Anthropic API, not academic APIs)
-MIN_API_DELAY = 0.5  # Minimal delay for Anthropic API calls only
-RETRY_DELAYS = [2, 4, 8]  # Faster retries
+# Rate limiting (safe values for Anthropic API)
+MIN_API_DELAY = 2.0  # Minimum 2 seconds between API calls
+RETRY_DELAYS = [5, 10, 20]  # Longer waits on rate limit errors
 
 # Trusted domains for academic sources
 TRUSTED_DOMAINS = {
