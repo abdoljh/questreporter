@@ -1266,7 +1266,7 @@ Use the variations listed above instead!"""
 
 REQUIREMENTS:
 - Use ONLY provided sources below
-- Cite as [N] throughout (number only, no word "Source")
+- CRITICAL: Cite sources as [1], [2], [3] etc. - just the number in brackets, NEVER write "Source"
 - Include specific data, statistics, and years from sources
 - VARY your phrasing - avoid repeating "{topic}" excessively
 
@@ -1298,7 +1298,7 @@ Return ONLY valid JSON:
 }}"""
 
     response = call_anthropic_api(
-        [{"role": "user", "content": prompt}], 
+        [{"role": "user", "content": prompt}],
         max_tokens=6000
     )
     text = "".join([c['text'] for c in response['content'] if c['type'] == 'text'])
@@ -1309,13 +1309,34 @@ Return ONLY valid JSON:
         'abstract', 'introduction', 'literatureReview', 'mainSections',
         'dataAnalysis', 'challenges', 'futureOutlook', 'conclusion'
     ]
-    
+
     for key in required_keys:
         if key not in draft or not draft[key]:
             if key == 'mainSections':
                 draft[key] = [{'title': 'Analysis', 'content': 'Content.'}]
             else:
                 draft[key] = f"Section about the topic."
+
+    # Post-process: Fix citations - remove "Source" word, keep only [N]
+    def fix_citations(text):
+        if isinstance(text, str):
+            # Replace [Source N] with [N]
+            text = re.sub(r'\[Source\s+(\d+)\]', r'[\1]', text, flags=re.IGNORECASE)
+            # Replace [source N] with [N]
+            text = re.sub(r'\[source\s+(\d+)\]', r'[\1]', text, flags=re.IGNORECASE)
+        return text
+
+    for key in draft:
+        if isinstance(draft[key], str):
+            draft[key] = fix_citations(draft[key])
+        elif isinstance(draft[key], list):
+            for i, item in enumerate(draft[key]):
+                if isinstance(item, dict):
+                    for k, v in item.items():
+                        if isinstance(v, str):
+                            item[k] = fix_citations(v)
+                elif isinstance(item, str):
+                    draft[key][i] = fix_citations(item)
 
     return draft
 
