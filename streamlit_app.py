@@ -142,6 +142,31 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+
+# ================================================================================
+# UTILITY FUNCTIONS - Safe Type Conversion
+# ================================================================================
+
+def safe_int(value, default=0):
+    """Safely convert value to int, handling 'N/A', None, strings, etc."""
+    if value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        # Handle 'N/A', 'unknown', empty strings
+        if value.strip().upper() in ('N/A', 'NA', 'UNKNOWN', '', 'NONE'):
+            return default
+        # Extract digits from strings like "cited by 45" or "45 citations"
+        import re
+        numbers = re.findall(r'\d+', value)
+        if numbers:
+            return int(numbers[0])
+    try:
+        return int(float(value))
+    except (ValueError, TypeError):
+        return default
+
 # ================================================================================
 # SESSION STATE INITIALIZATION
 # ================================================================================
@@ -360,8 +385,8 @@ def convert_orchestrator_to_source_format(papers: List[Dict]) -> List[Dict]:
             'url': paper.get('url', ''),
             'content': paper.get('abstract', paper.get('tldr', ''))[:500],
             'metadata': metadata,
-            'credibilityScore': min(100, 50 + int(paper.get('citations', 0)) // 10),
-            'credibilityJustification': f"Found in {paper.get('source_count', 1)} database(s), {paper.get('citations', 0)} citations",
+            'credibilityScore': min(100, 50 + safe_int(paper.get('citations', 0)) // 10),
+            'credibilityJustification': f"Found in {safe_int(paper.get('source_count', 1), 1)} database(s), {paper.get('citations', 0)} citations",
             'dateAccessed': datetime.now().isoformat(),
             # Keep original orchestrator data for reference
             '_orchestrator_data': paper
