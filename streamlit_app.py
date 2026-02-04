@@ -600,6 +600,37 @@ def format_citation_ieee(source: Dict, index: int) -> str:
     return citation
 
 
+def extract_cited_references(draft: Dict) -> set:
+    """
+    Extract all citation numbers used in the draft.
+    Returns a set of integers representing cited reference numbers (e.g., {1, 2, 5, 7}).
+    """
+    cited = set()
+
+    # Collect all text content from the draft
+    text_parts = []
+    for key, value in draft.items():
+        if isinstance(value, str):
+            text_parts.append(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    for k, v in item.items():
+                        if isinstance(v, str):
+                            text_parts.append(v)
+                elif isinstance(item, str):
+                    text_parts.append(item)
+
+    # Find all citation patterns [N] where N is a number
+    full_text = ' '.join(text_parts)
+    matches = re.findall(r'\[(\d+)\]', full_text)
+
+    for match in matches:
+        cited.add(int(match))
+
+    return cited
+
+
 def format_citation_apa(source: Dict, index: int) -> str:
     """Format citation in APA style"""
     meta = source.get('metadata', {})
@@ -637,15 +668,15 @@ def generate_draft_optimized(
     if not sources:
         raise Exception("No sources available")
 
-    # Prepare source list for prompt (top 12 sources)
+    # Prepare source list for prompt (top 25 sources for comprehensive coverage)
     source_list = []
-    for i, s in enumerate(sources[:12], 1):
+    for i, s in enumerate(sources[:25], 1):
         meta = s.get('metadata', {})
         source_list.append(f"""[{i}] {meta.get('title', 'Unknown')} ({meta.get('year', 'N/A')})
 Authors: {meta.get('authors', 'Unknown')}
 Venue: {meta.get('venue', 'Unknown')}
 {s['url'][:70]}
-Abstract: {s.get('content', '')[:300]}""")
+Abstract: {s.get('content', '')[:200]}""")
 
     sources_text = "\n\n".join(source_list)
 
@@ -907,12 +938,28 @@ def generate_html_report_optimized(
         <h1>References</h1>
 """
 
+    # Extract cited references from the draft and only include those
+    cited_refs = extract_cited_references(refined_draft)
+
+    # Filter and include only cited sources
+    cited_count = 0
     for i, source in enumerate(sources, 1):
-        if style == 'APA':
-            citation = format_citation_apa(source, i)
-        else:
-            citation = format_citation_ieee(source, i)
-        html += f'        <div class="ref-item">{citation}</div>\n'
+        if i in cited_refs:
+            cited_count += 1
+            if style == 'APA':
+                citation = format_citation_apa(source, i)
+            else:
+                citation = format_citation_ieee(source, i)
+            html += f'        <div class="ref-item">{citation}</div>\n'
+
+    # If no citations were found (fallback), include first 10 sources
+    if cited_count == 0:
+        for i, source in enumerate(sources[:10], 1):
+            if style == 'APA':
+                citation = format_citation_apa(source, i)
+            else:
+                citation = format_citation_ieee(source, i)
+            html += f'        <div class="ref-item">{citation}</div>\n'
 
     html += """
     </div>
