@@ -595,7 +595,7 @@ def format_citation_ieee(source: Dict, index: int) -> str:
         title = 'Research Article'
 
     formatted_authors = format_authors_ieee(authors)
-    citation = f'[{index}] {formatted_authors}, "{title}," {venue}, {year}. \nLink: {url}'
+    citation = f'[{index}] {formatted_authors}, "{title}," {venue}, {year}. <a href="{url}" target="_blank">{url}</a>'
 
     return citation
 
@@ -629,6 +629,51 @@ def extract_cited_references(draft: Dict) -> set:
         cited.add(int(match))
 
     return cited
+
+
+def renumber_citations_in_text(text: str, old_to_new: Dict[int, int]) -> str:
+    """
+    Renumber citations in text according to the mapping.
+    E.g., if old_to_new = {1: 1, 3: 2, 5: 3}, then [3] becomes [2], [5] becomes [3].
+    """
+    def replace_citation(match):
+        old_num = int(match.group(1))
+        new_num = old_to_new.get(old_num, old_num)
+        return f'[{new_num}]'
+
+    return re.sub(r'\[(\d+)\]', replace_citation, text)
+
+
+def renumber_citations_in_draft(draft: Dict, old_to_new: Dict[int, int]) -> Dict:
+    """
+    Renumber all citations in the draft according to the mapping.
+    Returns a new draft dict with renumbered citations.
+    """
+    new_draft = {}
+
+    for key, value in draft.items():
+        if isinstance(value, str):
+            new_draft[key] = renumber_citations_in_text(value, old_to_new)
+        elif isinstance(value, list):
+            new_list = []
+            for item in value:
+                if isinstance(item, dict):
+                    new_item = {}
+                    for k, v in item.items():
+                        if isinstance(v, str):
+                            new_item[k] = renumber_citations_in_text(v, old_to_new)
+                        else:
+                            new_item[k] = v
+                    new_list.append(new_item)
+                elif isinstance(item, str):
+                    new_list.append(renumber_citations_in_text(item, old_to_new))
+                else:
+                    new_list.append(item)
+            new_draft[key] = new_list
+        else:
+            new_draft[key] = value
+
+    return new_draft
 
 
 def format_citation_apa(source: Dict, index: int) -> str:
@@ -802,8 +847,8 @@ def refine_draft_simple(draft: Dict, topic: str, sources_count: int) -> Dict:
 # ================================================================================
 
 def generate_html_report_optimized(
-    refined_draft: Dict, 
-    form_data: Dict, 
+    refined_draft: Dict,
+    form_data: Dict,
     sources: List[Dict]
 ) -> str:
     """Generate HTML report"""
@@ -811,13 +856,25 @@ def generate_html_report_optimized(
 
     try:
         report_date = datetime.strptime(
-            form_data['date'], 
+            form_data['date'],
             '%Y-%m-%d'
         ).strftime('%B %d, %Y')
     except:
         report_date = datetime.now().strftime('%B %d, %Y')
 
     style = form_data.get('citation_style', 'IEEE')
+
+    # Extract cited references and create renumbering map
+    cited_refs = extract_cited_references(refined_draft)
+    cited_refs_sorted = sorted(cited_refs)
+
+    # Create mapping from old reference numbers to new sequential numbers
+    old_to_new = {}
+    for new_num, old_num in enumerate(cited_refs_sorted, 1):
+        old_to_new[old_num] = new_num
+
+    # Renumber citations in the draft
+    renumbered_draft = renumber_citations_in_draft(refined_draft, old_to_new)
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -903,19 +960,19 @@ def generate_html_report_optimized(
     </div>
 
     <h1>Executive Summary</h1>
-    <p>{refined_draft.get('executiveSummary', '')}</p>
+    <p>{renumbered_draft.get('executiveSummary', '')}</p>
 
     <h1>Abstract</h1>
-    <div class="abstract">{refined_draft.get('abstract', '')}</div>
+    <div class="abstract">{renumbered_draft.get('abstract', '')}</div>
 
     <h1>Introduction</h1>
-    <p>{refined_draft.get('introduction', '')}</p>
+    <p>{renumbered_draft.get('introduction', '')}</p>
 
     <h1>Literature Review</h1>
-    <p>{refined_draft.get('literatureReview', '')}</p>
+    <p>{renumbered_draft.get('literatureReview', '')}</p>
 """
 
-    for section in refined_draft.get('mainSections', []):
+    for section in renumbered_draft.get('mainSections', []):
         html += f"""
     <h2>{section.get('title', 'Section')}</h2>
     <p>{section.get('content', '')}</p>
@@ -923,37 +980,37 @@ def generate_html_report_optimized(
 
     html += f"""
     <h1>Data & Analysis</h1>
-    <p>{refined_draft.get('dataAnalysis', '')}</p>
+    <p>{renumbered_draft.get('dataAnalysis', '')}</p>
 
     <h1>Challenges</h1>
-    <p>{refined_draft.get('challenges', '')}</p>
+    <p>{renumbered_draft.get('challenges', '')}</p>
 
     <h1>Future Outlook</h1>
-    <p>{refined_draft.get('futureOutlook', '')}</p>
+    <p>{renumbered_draft.get('futureOutlook', '')}</p>
 
     <h1>Conclusion</h1>
-    <p>{refined_draft.get('conclusion', '')}</p>
+    <p>{renumbered_draft.get('conclusion', '')}</p>
 
     <div class="references">
         <h1>References</h1>
 """
 
-    # Extract cited references from the draft and only include those
-    cited_refs = extract_cited_references(refined_draft)
-
-    # Filter and include only cited sources
-    cited_count = 0
-    for i, source in enumerate(sources, 1):
-        if i in cited_refs:
-            cited_count += 1
+    # Generate references with sequential numbering
+    # cited_refs_sorted contains the original reference numbers in order
+    # old_to_new maps original numbers to new sequential numbers
+    for old_ref_num in cited_refs_sorted:
+        new_ref_num = old_to_new[old_ref_num]
+        # Get the source at the original index (1-based)
+        if old_ref_num <= len(sources):
+            source = sources[old_ref_num - 1]
             if style == 'APA':
-                citation = format_citation_apa(source, i)
+                citation = format_citation_apa(source, new_ref_num)
             else:
-                citation = format_citation_ieee(source, i)
+                citation = format_citation_ieee(source, new_ref_num)
             html += f'        <div class="ref-item">{citation}</div>\n'
 
     # If no citations were found (fallback), include first 10 sources
-    if cited_count == 0:
+    if len(cited_refs_sorted) == 0:
         for i, source in enumerate(sources[:10], 1):
             if style == 'APA':
                 citation = format_citation_apa(source, i)
