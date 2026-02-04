@@ -171,6 +171,18 @@ def safe_int(value, default=0):
 # SESSION STATE INITIALIZATION
 # ================================================================================
 
+def get_secret_key(key_name: str, default: str = '') -> str:
+    """
+    Safely retrieve an API key from Streamlit Secrets.
+    Returns the secret value if found, otherwise returns the default.
+    Used during development phase to load keys from secrets.
+    """
+    try:
+        return st.secrets.get(key_name, default)
+    except Exception:
+        return default
+
+
 def initialize_session_state():
     """Initialize all session state variables"""
     if 'step' not in st.session_state:
@@ -186,15 +198,16 @@ def initialize_session_state():
             'citation_style': 'IEEE'
         }
 
-    # API Keys (session-only)
+    # API Keys - Load from Streamlit Secrets if available (development phase),
+    # otherwise use empty defaults for user entry (production)
     if 'api_keys' not in st.session_state:
         st.session_state.api_keys = {
-            's2': '',
-            'serp': '',
-            'core': '',
-            'scopus': '',
-            'springer': '',
-            'email': 'researcher@example.com'
+            's2': get_secret_key('S2_API_KEY'),
+            'serp': get_secret_key('SERP_API_KEY'),
+            'core': get_secret_key('CORE_API_KEY'),
+            'scopus': get_secret_key('SCOPUS_API_KEY'),
+            'springer': get_secret_key('SPRINGER_API_KEY'),
+            'email': get_secret_key('USER_EMAIL', 'researcher@example.com')
         }
 
     if 'progress' not in st.session_state:
